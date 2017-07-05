@@ -1,4 +1,4 @@
-== Live PostgreSQL View
+## Live PostgreSQL View
 
 A convenient way to use postgres data from JavaScript.
 
