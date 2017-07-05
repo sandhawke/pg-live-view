@@ -25,5 +25,8 @@
   "devDependencies": {
     "tap": "^10.7.0",
     "tape": "^4.7.0"
+  },
+  "dependencies": {
+    "debug": "^2.6.8"
   }
 }

@@ -1,5 +1,7 @@
 'use strict'
 
+const debug = require('debug')('props-arg')
+
 /**
  * Turn a 'props' argument into a Map from property names
  * to objects which characterize and constrain what we're supposed to
@@ -27,6 +29,7 @@ function canonicalizePropertiesArgument (props) {
     }
   }
 
+  debug('in array form, now checking', p)
   for (let [propname, ops] of p) {
     if (typeof ops === 'string' ||
         typeof ops === 'number' ||
@@ -38,8 +41,10 @@ function canonicalizePropertiesArgument (props) {
       for (let key of Object.keys(ops).sort()) {
         arrayForm.push([key, ops[key]])
       }
+      ops = arrayForm
     }
 
+    debug('checking property', propname, ops)
     if (Array.isArray(ops)) {
       for (let [op, arg, ...extra] of ops) {
         const len = expectedLen => {
@@ -56,17 +61,22 @@ function canonicalizePropertiesArgument (props) {
             len(1)
             typ(arg, 'scalar')
             break
-          // some day we'll allow more than 'eq' !
+          case 'required':
+            len(1)
+            break
+          // some day we'll allow more operators!
           default:
             throw Error(
-              'unrecognized property operator:' + propname + ': ' + op)
+              `unrecognized operator for property '${propname}': '${op}'`)
         }
+        p.set(propname, [op, arg, ...extra])
       }
     } else {
       throw Error(
         'malformed properties operation set, ' + propname + ': ' + ops)
     }
   }
+  return p
 }
 
 module.exports = canonicalizePropertiesArgument
