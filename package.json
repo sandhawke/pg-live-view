@@ -1,0 +1,29 @@
+{
+  "name": "pg-live-view",
+  "version": "0.0.1",
+  "description": "convenient way to work with simple postgres data",
+  "main": "index.js",
+  "scripts": {
+    "test": "standard && tap --cov test[a-z0-9-_]*.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sandhawke/pg-live-view.git"
+  },
+  "keywords": [
+    "live",
+    "database",
+    "postgres",
+    "PostgreSQL"
+  ],
+  "author": "Sandro Hawke (http://hawke.org/sandro)",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/sandhawke/pg-live-view/issues"
+  },
+  "homepage": "https://github.com/sandhawke/pg-live-view#readme",
+  "devDependencies": {
+    "tap": "^10.7.0",
+    "tape": "^4.7.0"
+  }
+}
