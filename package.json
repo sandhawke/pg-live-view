@@ -2,7 +2,7 @@
   "name": "pg-live-view",
   "version": "0.0.1",
   "description": "convenient way to work with simple postgres data",
-  "main": "index.js",
+  "main": "view.js",
   "scripts": {
     "test": "standard && tap --cov test[a-z0-9-_]*.js"
   },
@@ -27,6 +27,10 @@
     "tape": "^4.7.0"
   },
   "dependencies": {
-    "debug": "^2.6.8"
+    "debug": "^2.6.8",
+    "eventemitter3": "^2.0.3",
+    "pg": "^6.4.0",
+    "pg-query-stream": "^1.0.0",
+    "sql-template-strings": "^2.2.2"
   }
 }

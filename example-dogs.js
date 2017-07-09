@@ -1,22 +1,72 @@
 'use strict'
 
-const pgView = require('pg-live-view')
-
-console.log('Watching for records of dogs')
-
-const v = pgView('name, age, weight', 'my_dogs')
-
-v.on('appear', dog => {
-  console.log('Found record of a dog,', dog)
-  dog.on('disappear', dog => {
-    console.log('Dog record removed,', dog)
-  })
-  dog.on('change', (before, after) => {
-    console.log('Dog record changed:\n', before, '\n => \n', after)
-  })
+process.on('unhandledRejection', (reason, p) => {
+  console.error(process.argv[1], 'Unhandled Rejection at: Promise', p, 'reason:', reason)
+  process.exit()
 })
 
-setTimeout(() => {
-  console.log('Okay, that was long enough.')
-  v.close()
-}, 5000)
+const View = require('pg-live-view')
+
+const seconds = 5
+console.log(`Watching my_dogs table ${seconds} seconds`)
+
+setupDatabaseForExample().then(() => {
+
+  const v = new View('name, age, weight', 'my_dogs')
+
+  v.on('appear', dog => {
+    console.log('Found record of a dog,', dog)
+
+    dog.on('disappear', dog => {
+      console.log('Dog record removed,', dog)
+    })
+    dog.on('change', (before, after) => {
+      console.log('Dog record changed:\n', before, '\n => \n', after)
+    })
+
+  })
+
+  setTimeout(() => {
+    console.log('Okay, that was long enough.')
+    v.close()
+  }, seconds * 1000)
+
+})
+
+function setupDatabaseForExample () {
+  const pg = require('pg')
+  let pool = new pg.Pool({})
+
+  setTimeout(() => {
+    console.log('dog 2')
+    pool.query("INSERT INTO my_dogs VALUES (2, 'Tsuzumi', 2, 61)")
+  }, 0.1 * seconds * 1000)
+
+  setTimeout(() => {
+    console.log('dog 3')
+    pool.query("INSERT INTO my_dogs VALUES (3, 'Mako', 3, 400)")
+  }, 0.2 * seconds * 1000)
+
+  setTimeout(() => {
+    console.log('CLOSING setup pool.')
+    pool.end()
+    pool = {
+      query: () => null
+    }
+  }, seconds * 1000)
+
+  return (
+    pool.query(`DROP TABLE IF EXISTS my_dogs`)
+      .then(() => {
+        return pool.query(`
+          CREATE TABLE IF NOT EXISTS my_dogs (
+            id int primary key, 
+            name varchar, 
+            age int, 
+            weight float
+          )`)})
+      .then(() => {
+        return pool.query("INSERT INTO my_dogs VALUES (1, 'Taiko', 3, 87)")
+      })
+  )
+}
