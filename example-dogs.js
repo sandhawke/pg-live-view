@@ -48,6 +48,17 @@ function setupDatabaseForExample () {
   }, 0.2 * seconds * 1000)
 
   setTimeout(() => {
+    console.log('dog 4')
+    pool.query("UPDATE my_dogs SET age=3 WHERE id=2")
+  }, 0.3 * seconds * 1000)
+
+  setTimeout(() => {
+    console.log('dog 5')
+    pool.query("DELETE FROM my_dogs WHERE id=1")
+  }, 0.4 * seconds * 1000)
+
+
+  setTimeout(() => {
     console.log('CLOSING setup pool.')
     pool.end()
     pool = {

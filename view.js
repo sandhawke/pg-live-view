@@ -26,13 +26,39 @@ class View {
 
     this.proxies = new Map()
 
+    this.rowEE = new Map() // id => the EventEmitter for that row, if there is one
     this.handler = {
       get: (target, name) => {
         // console.log('PROXY GET', target, JSON.stringify(name), typeof name)
         if (name === 'on') {
-          console.log('NOT IMPLEMENTED: WATCHING RECORD', target)
-          return (() => null)
-        } 
+          let ee = this.rowEE.get(target.id)
+          if (ee == undefined) {
+            ee = new EventEmitter()
+            this.rowEE.set(target.id, ee)
+            debug('new ee for row', target.id, ee)
+          } else {
+            debug('existing ee for row', target.id, ee)
+          }
+          return ee.on.bind(ee)
+        } else if (name === '_gotDatabaseUpdate') {
+          // weird trick to reach through the proxy   :-/
+          // Maybe make this a Symbol so there chance of collision?
+          return (newdata => {
+            debug('database update from', target)
+            debug('database update to  ', newdata)
+            const old = Object.assign({}, target)
+            for (let key of Object.keys(target)) {
+              target[key] = newdata[key]
+              delete newdata[key]
+            }
+            for (let key of Object.keys(newdata)) {
+              target[key] = newdata[key]
+            }
+            debug('database update left target as', target)
+            debug('database returning old as     ', old)
+            return old
+          })
+        }
         return target[name]
       },
       set: (target, name, value) => {
@@ -143,13 +169,34 @@ class View {
                  client.query(sql)
                    .then(() => {
                      debug('listening via', sql)
-                     console.log('ON NOTIFICATION')
+                     // console.log('ON NOTIFICATION')
                      client.on('notification', msg => {
                        debug('postgres notification received:', msg)
-                       console.log('***GOT NOTIFICATION', msg.payload)
+                       // console.log('***GOT NOTIFICATION', msg.payload)
                        const [op, data] = JSON.parse(msg.payload)
                        if (op === 'INSERT') {
                          this.appear(data)
+                       } else if (op === 'DELETE') {
+                         const ee = this.rowEE.get(data.id)
+                         if (ee) {
+                           ee.emit('disappear', data)
+                         }
+                         this.rowEE.delete(data.id)
+                         this.proxies.delete(data.id)
+                       } else if (op === 'UPDATE') {
+                         const id = data.id // data.id gets deleted in copying
+                         debug('update on', data.id, JSON.stringify(data))
+                         const proxy = this.proxies.get(id)
+                         const old = proxy._gotDatabaseUpdate(data)
+                         const ee = this.rowEE.get(id)
+                         if (ee) {
+                           debug('emit change', old, proxy)
+                           ee.emit('change', old, proxy)
+                         } else {
+                           debug('no event emitter')
+                         }
+                       } else {
+                         throw new Error('unexpected database change code')
                        }
                      })
                    })
@@ -172,7 +219,7 @@ class View {
         msg json;
     BEGIN
         IF (TG_OP = 'DELETE') THEN
-            row = row_to_json(OLD);
+            row = json_build_object('id', OLD.id);
         ELSE
             row = row_to_json(NEW);
         END IF;
