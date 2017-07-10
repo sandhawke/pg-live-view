@@ -3,6 +3,9 @@
 const pg = require('pg')
 const debug = require('debug')('View')
 const EventEmitter = require('eventemitter3')
+const setdefault = require('setdefault')
+const IdDispenser = require('pg-id-dispenser')
+
 // const canonicalizePropertiesArgument = require('./props-arg')
 // const SQL = require('sql-template-strings')
 // const QueryStream = require('pg-query-stream')
@@ -47,7 +50,10 @@ class View {
       get: this.proxyHandlerGet.bind(this),
       set: this.proxyHandlerSet.bind(this)
     }
+    this.needToSave = new Map()
 
+    this.dispenser = new IdDispenser({database: this.database})
+    
     // returns syncronously, of course, since it's a constructor
     //
     // on(...) and add(...) will invoke connect() for us and buffer until
@@ -79,11 +85,71 @@ class View {
   }
 
   proxyHandlerSet (target, name, value) {
-    // mark it dirty, and SQL UPDATE soon
-    //
-    // and use .deleted = true as delete record, I think.
-    //
-    console.error('set', target, name, value)
+    debug('set', target, name, value)
+    target[name] = value
+    setdefault(this.needToSave, target, new Set()).add(name)
+    // do it on the nextTick so several of these in a row
+    // end up as only one UPDATE operation
+    process.nextTick(this.save.bind(this, target))
+  }
+
+  save (target) {
+    /*
+      This is a blind-overwrite save.
+
+      To have an etag-type if-not-modified save, we'd need to add a
+      version (or etag) column to the table, then we could have that
+      match be part of the the WHERE clause.
+
+      And the etag is the sha of the stable-json of the row ?  Or it's
+      an objid from our objid generator?
+     */
+    const names = this.needToSave.get(target)
+    if (!names || names.length === 0) {
+      // someone else did it already
+      return Promise.resolve()
+    }
+    this.needToSave.delete(target)
+    const sets = []
+    const vals = []
+    let counter = 1
+    for (let key of Object.keys(target)) {
+      sets.push(key + '=$' + counter++)
+      vals.push(target[key])
+    }
+    const setstr = sets.join(', ')
+    const q1 = `UPDATE ${this.tableName} SET ${setstr} WHERE id=${target.id}`
+    return this.query(q1, vals)
+  }
+
+  /**
+   * Returns the promise of an id that will be unique in the life of
+   * the SERVER, suitable as a id= for a new object or a version= for
+   * an update object.
+   *
+   * It's basically: SELECT nextval('client_assigned_id');
+   *
+   * ... Except we get them 10,000 at a time so 99.99% of the time this
+   * will resolve without any io, let along a server round-trip.
+   *
+   * If that seems "wasteful", just think of objids as 15-digits of
+   * client id (assigned by server) + 4 digits of local objid
+   * (assigned by that client).  And when the client runs out, it just
+   * gets a new client-id.  It hurts my soul a little to use digits
+   * instead of bits, but it makes debugging a little easier, and
+   * the computer doesn't care.
+   */
+  nextObjId () {
+    if (this.nextId < this.maxId) {
+      this.nextId++
+      return Promise.resolve(this.nextId)
+    }
+    return (
+      this.query("SELECT nextval('client_assigned_id')")
+        .then(res => {
+          
+        })
+    )
   }
 
 /**
