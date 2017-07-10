@@ -12,12 +12,7 @@ class View {
     this._ee = new EventEmitter()
     // this.filter = canonicalizePropertiesArgument(filter)
     this.tableName = tablename
-    debug('opts', opts)
-    debug('DTF? ', opts.dropTableFirst)
-    
     this.dropTableFirst = opts.dropTableFirst
-    debug('DTF? ', opts.dropTableFirst)
-    debug('DTF? ', this.dropTableFirst)
     this.createUsingSQL = opts.createUsingSQL
 
     // If you have a lot of views, it makes a lot of sense to have
@@ -36,6 +31,9 @@ class View {
     this.handler = {
       get: (target, name) => {
         // console.log('PROXY GET', target, JSON.stringify(name), typeof name)
+        //
+        // Maybe instead of returning a real EE, give a subset that requires the
+        // events be 'disappear' and 'change', to avoid typos.
         if (name === 'on') {
           let ee = this.rowEE.get(target)
           if (ee === undefined) {
@@ -81,6 +79,7 @@ class View {
         debug('query completed')
         this.ready = true
         if (this.pleaseClose) this.close()
+        this._ee.emit('ready')
       })
 
     // returns syncronously; will buffer operations until connection is ready
@@ -108,9 +107,9 @@ class View {
         throw Error('not implemented')
       }
 
-    // check that it meets filter?
+      // check that it meets filter?
 
-    // check that properties match schema?
+      // check that properties match schema?
 
       const props = []
       const dollars = []
@@ -122,15 +121,23 @@ class View {
         values.push(data[key])
       }
 
-      this.query(`INSERT INTO ${this.tableName} (${props.join(', ')}) VALUES (${dollars.join(', ')}) RETURNING *`, values)
-      .then(res => {
-        debug('creation INSERT returned', res.rows[0].id)
-        // it doesn't matter if the NOTIFY arrives before or after the INSERT
-        // returns; whichever one is first will create the Proxy and the
-        // other will just look it up
-        resolve(this.appear(res.rows[0]))
-        this._ee.emit('stable')
-      })
+      const f = () => {
+        this.query(`INSERT INTO ${this.tableName} (${props.join(', ')}) VALUES (${dollars.join(', ')}) RETURNING *`, values)
+          .then(res => {
+            debug('creation INSERT returned', res.rows[0].id)
+            // it doesn't matter if the NOTIFY arrives before or after the INSERT
+            // returns; whichever one is first will create the Proxy and the
+            // other will just look it up
+            resolve(this.appear(res.rows[0]))
+            this._ee.emit('stable')
+          })
+      }
+
+      if (this.ready) {
+        f()
+      } else {
+        this._ee.on('ready', f)
+      }
     })
   }
 
@@ -294,16 +301,29 @@ class View {
   makeTrigger () {
     if (this.pleaseClose) return Promise.resolve()
     // DO *NOT* SQL-QUOTE the table names
+
+    /* DO NOT drop the trigger, because that creates a window
+       where we'll miss events if we open up a second view on
+       the same table.  Trust that a trigger with this name
+       was defined by us.
     return (
       this.query(`
            DROP TRIGGER IF EXISTS ${this.tableName}_live_view
            ON ${this.tableName} CASCADE
         `).then(() => {
-          return this.query(`
-              CREATE TRIGGER ${this.tableName}_live_view
-              AFTER INSERT OR UPDATE OR DELETE ON ${this.tableName}
-                  FOR EACH ROW EXECUTE PROCEDURE live_view_notify();
-            `)
+          */
+
+    return (
+      this.query(`
+       CREATE TRIGGER ${this.tableName}_live_view
+       AFTER INSERT OR UPDATE OR DELETE ON ${this.tableName}
+           FOR EACH ROW EXECUTE PROCEDURE live_view_notify(); `)
+        .catch(e => {
+          if (e.code === '42710' && e.routine === 'CreateTrigger') {
+            // ignore error "Trigger Already Exists"
+          } else {
+            throw e
+          }
         })
     )
   }
