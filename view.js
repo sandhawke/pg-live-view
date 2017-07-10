@@ -7,33 +7,51 @@ const EventEmitter = require('eventemitter3')
 // const SQL = require('sql-template-strings')
 // const QueryStream = require('pg-query-stream')
 
+/**
+ *
+ * Options:
+ *   pool: a pg connection pool, if you want us to use yours
+ *   database: a pg database id, otherwise we'll use the environment
+ *   dropTableFirst: useful for testing
+ *   createUsingSQL: create table if missing, using these columns
+ *                   (we'll supply the id column)
+ *
+ */
 class View {
   constructor (tablename, opts = {}) {
-    this._ee = new EventEmitter()
-    // this.filter = canonicalizePropertiesArgument(filter)
     this.tableName = tablename
-    this.dropTableFirst = opts.dropTableFirst
-    this.createUsingSQL = opts.createUsingSQL
+    this._ee = new EventEmitter()
+
+    // I'm slightly dubious about this approach, but it's nicely DRY.
+    Object.assign(this, opts)
+
+    // this.filter = canonicalizePropertiesArgument(filter)
 
     // If you have a lot of views, it makes a lot of sense to have
     // them use the same pool, so create it yourself and pass it in
-    if (opts.pool) {
-      this.pool = opts.pool
-    } else {
-      this._database = opts.database
-      this.pool = new pg.Pool({database: this._database})
-      this.myPool = true
+    if (!this.pool) {
+      this.pool = new pg.Pool({database: this.database})
+      this.endPoolOnClose = true
     }
 
-    this.proxies = new Map()
+    // For each row we hold in memory, there's a Proxy and its Target
+    //
+    // We hand out the Proxy, and keep the data cache in the Target.
+    //
+    // We (lazy) create an EventEmitter for the Target, only if someone
+    // accesses its .on property.
 
+    this.proxiesById = new Map()
     this.rowEE = new Map() // target->EventEmitter for that target
     this.handler = {
       get: this.proxyHandlerGet.bind(this),
       set: this.proxyHandlerSet.bind(this)
     }
 
-    // returns syncronously; will buffer operations until connection is ready
+    // returns syncronously, of course, since it's a constructor
+    //
+    // on(...) and add(...) will invoke connect() for us and buffer until
+    // it's ready.
   }
 
   proxyHandlerGet (target, name) {
@@ -131,7 +149,7 @@ class View {
 
     if (this.ready) {
       this.stopListen()
-      if (this.myPool) {
+      if (this.endPoolOnClose) {
         debug('calling pool.end', this.pool.end)
         this.pool.end()
         .then(() => {
@@ -168,7 +186,7 @@ class View {
   handleUpdateEvent (newdata) {
     debug('update on', newdata.id, JSON.stringify(newdata))
     const id = newdata.id // in one version we overwrote .id later
-    const proxy = this.proxies.get(id)
+    const proxy = this.proxiesById.get(id)
     const target = proxy._targetBehindProxy
     const ee = this.rowEE.get(target)
     let old
@@ -265,14 +283,14 @@ class View {
                      if (op === 'INSERT') {
                        this.appear(data)
                      } else if (op === 'DELETE') {
-                       const proxy = this.proxies.get(data.id)
+                       const proxy = this.proxiesById.get(data.id)
                        const target = proxy._targetBehindProxy
                        const ee = this.rowEE.get(target)
                        if (ee) {
                          ee.emit('disappear', data)
                        }
                        this.rowEE.delete(target)
-                       this.proxies.delete(data.id)
+                       this.proxiesById.delete(data.id)
                      } else if (op === 'UPDATE') {
                        this.handleUpdateEvent(data)
                      } else {
@@ -401,11 +419,11 @@ class View {
 
   appear (data) {
     debug('generating APPEAR', data)
-    let proxy = this.proxies.get(data.id)
+    let proxy = this.proxiesById.get(data.id)
     if (!proxy) {
       debug('new proxy needed for', data.id)
       proxy = new Proxy(data, this.handler)
-      this.proxies.set(data.id, proxy)
+      this.proxiesById.set(data.id, proxy)
       debug('generating APPEAR on proxy', proxy)
       this._ee.emit('appear', proxy)
       return proxy
