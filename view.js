@@ -66,9 +66,14 @@ class View {
     // immediate results.  So, better to wait for the 'appear' handler
     // to be added, I think.
     this.startListening()
+      .then(() => {
+        if (this.pleaseClose) this.close()
+      })
       .then(() => this.startQuery())
       .then(() => {
         debug('query completed')
+        this.ready = true
+        if (this.pleaseClose) this.close()
       })
     
     // returns syncronously; will buffer operations until connection is ready
@@ -77,28 +82,21 @@ class View {
   /**
    * Add a new database record with this data.  
    *
-   * For now, don't give it an id; let the remote end asign one.
+   * For now, don't give it an id; let the database asign one.
    * 
-   * Returns a promise for that id.
+   * Returns a promise for the object when it appears back again, with
+   * its id.
    *
-   * It would be NICE to allow us to create the proxy here, now,
-   * synchronously, but I believe that would require having another
-   * column in the table (creation_id) so that we could recognize our
-   * own creation coming back in the trigger, since it might come back
-   * before 'RETURNING id' tells us our response.  Oh, unless maybe we
-   * can do it OVER THE LISTEN CLIENT?
-
-
-
-A proxy will * If data has a .id property, it must be distinct from
-any other * .id value in the database.  If it has no .id, a temporary
-* negative one will be assigned before returning; it will be *
-modified to the global one from the database at some point.
-   *
-   * Returns quickly (synchronously) with a usable proxy object, which
-   * you can watch and keep altering.
+   * It'd be cool to return the id-less proxy now, so you can link it
+   * into structures and stuff, but I don't know how to do that
+   * without adding some kind of a creation-id column to each table we
+   * view, or at least a flag that we created it so there's already
+   * a proxy for it.  Right now, when we get the NOTIFY, there is NO WAY
+   * to tell that was a row we just created and for which we are awaiting
+   * the RETURNING value.
    */
   add (data) {
+    return new Promise((resolve, reject) => {
     if (data.id) {
       throw ('not implemented')
     }
@@ -106,16 +104,6 @@ modified to the global one from the database at some point.
     // check that it meets filter?
 
     // check that properties match schema?
-
-    // make a copy of the backing object, to avoid the temptation for
-    // caller to edit it, rather than going throught he proxy
-    const target = Object.assign({}, data)
-    const proxy = new Proxy(target, this.handler)    
-
-    // If you want to know about rows added by other parts of the same
-    // process, you want listen for 'added', but these objects do not
-    // necessarily have .id fields.
-    this._ee.emit('added', proxy)
 
     const props = []
     const dollars = []
@@ -127,37 +115,32 @@ modified to the global one from the database at some point.
       values.push(data[key])
     }
 
-    // we have to do this over the listenClient, not the pool, to make
-    // sure we get the id back here BEFORE the trigger runs.
-    // Otherwise, when appear looks in this.proxies, this wont be
-    // there, and it'll create a new proxy.
-    this.listenClient.query(`INSERT INTO ${this.tableName} (${props.join(', ')}) VALUES (${dollars.join(', ')}) RETURNING id`, values)
+    this.query(`INSERT INTO ${this.tableName} (${props.join(', ')}) VALUES (${dollars.join(', ')}) RETURNING *`, values)
       .then(res => {
         debug('creation INSERT returned', res.rows[0].id)
-        target.id = res.rows[0].id
-        this.proxies.set(target.id, proxy)
-        const ee = this.rowEE.get(target)
-        if (ee) {
-          ee.emit('saved', proxy)
-        }
-        this._ee.emit('appear', proxy)
+        // it doesn't matter if the NOTIFY arrives before or after the INSERT
+        // returns; whichever one is first will create the Proxy and the
+        // other will just look it up
+        resolve(this.appear(res.rows[0]))
       })
-
-    return proxy
+    })
   }
   
   close () {
     // remove triggers/function?   Nah.
-    debug('calling stopListen', this.stopListen)
-    if (this.stopListen) {
+    
+    if (this.ready) {
       this.stopListen()
-    }
-    if (this.myPool) {
-      debug('calling pool.end', this.pool.end)
-      this.pool.end()
-        .then(() => {
-          debug('pool end resolved')
-        })
+      if (this.myPool) {
+        debug('calling pool.end', this.pool.end)
+        this.pool.end()
+          .then(() => {
+            debug('pool end resolved')
+          })
+      }
+    } else {
+      // it's too soon in the process, so just set a flag
+      this.pleaseClose = true
     }
   }
   
@@ -279,7 +262,8 @@ modified to the global one from the database at some point.
   }             
   
   makeFunction () {
-  return this.query(`
+    if (this.pleaseClose) return Promise.resolve()
+    return this.query(`
     CREATE OR REPLACE FUNCTION live_view_notify() RETURNS TRIGGER AS $$
     DECLARE 
         row json;
@@ -299,6 +283,7 @@ modified to the global one from the database at some point.
   }
 
   makeTrigger () {
+    if (this.pleaseClose) return Promise.resolve()
     // DO *NOT* SQL-QUOTE the table names
     return (
       this.query(`
@@ -354,8 +339,10 @@ modified to the global one from the database at some point.
       this.proxies.set(data.id, proxy)
       debug('generating APPEAR on proxy', proxy)
       this._ee.emit('appear', proxy)
+      return proxy
     } else {
-      debug('duplicate appear for', data.id)
+      debug('duplicate appear for ' + data.id)
+      return proxy
     }
   }
 }
