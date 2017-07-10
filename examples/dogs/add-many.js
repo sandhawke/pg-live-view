@@ -1,17 +1,14 @@
 'use strict'
 
-process.on('unhandledRejection', (reason, p) => {
-  console.error(process.argv[1], 'Unhandled Rejection at: Promise', p, 'reason:', reason)
-  process.exit()
-})
-
-
 const View = require('pg-live-view')
 
-const v = new View('name, age, weight', 'my_dogs')
+const v = new View('my_dogs')
 
+const n = 1000
+
+console.log('adding', n, 'Fluffies')
 const all = []
-for (let x = 1; x < 10000; x++) {
+for (let x = 1; x < n; x++) {
   all.push(
     v.add({name: 'Fluffy #' +x , age: 10 * x, weight: 60})
       .then(f => {

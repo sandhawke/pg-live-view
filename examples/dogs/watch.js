@@ -2,9 +2,9 @@
 
 const View = require('pg-live-view')
 
-console.log(`Watching my_dogs table..`)
+console.log(`Watching my_dogs table...  (ctl-C to stop)`)
 
-const v = new View('name, age, weight', 'my_dogs')
+const v = new View('my_dogs')
 
 v.on('appear', dog => {
   console.log('Found record of a dog,', dog)
@@ -18,3 +18,6 @@ v.on('appear', dog => {
 
 })
 
+v.on('stable', () => {
+  console.log('Results stable, waiting for more changes')
+})

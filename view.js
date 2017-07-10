@@ -8,9 +8,9 @@ const debug = require('debug')('View')
 const QueryStream = require('pg-query-stream')
 
 class View {
-  constructor (filter, tablename, opts = {}) {
+  constructor (tablename, opts = {}) {
     this._ee = new EventEmitter()
-    this.filter = canonicalizePropertiesArgument(filter)
+    // this.filter = canonicalizePropertiesArgument(filter)
     this.tableName = tablename
     console.assert(tablename)
 
@@ -122,6 +122,7 @@ class View {
         // returns; whichever one is first will create the Proxy and the
         // other will just look it up
         resolve(this.appear(res.rows[0]))
+        this._ee.emit('stable')
       })
     })
   }
@@ -148,10 +149,10 @@ class View {
   // reduce ... weird things.
   
   on (eventName, callback) {
-    if (eventName === 'appear') {
+    if (eventName in {appear:1, stable:1}) {
       this._ee.on(eventName, callback)
     } else {
-      throw Error('unknown event name:', eventName)
+      throw Error('unknown event name: ' + JSON.stringify(eventName))
     }
   }
 
@@ -248,6 +249,7 @@ class View {
                        } else {
                          throw new Error('unexpected database change code')
                        }
+                       this._ee.emit('stable')
                      })
                    })
                    .catch(e => {
@@ -306,6 +308,7 @@ class View {
           for (let row of res.rows) {
             this.appear(row)
           }
+          this._ee.emit('stable')
         })
     )
   }
