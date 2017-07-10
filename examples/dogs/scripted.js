@@ -11,7 +11,6 @@ const seconds = 5
 console.log(`Watching my_dogs table ${seconds} seconds`)
 
 setupDatabaseForExample().then(() => {
-
   const v = new View('name, age, weight', 'my_dogs')
 
   v.on('appear', dog => {
@@ -23,14 +22,12 @@ setupDatabaseForExample().then(() => {
     dog.on('change', (before, after) => {
       console.log('Dog record changed:\n', before, '\n => \n', after)
     })
-
   })
 
   setTimeout(() => {
     console.log('Okay, that was long enough.')
     v.close()
   }, seconds * 1000)
-
 })
 
 function setupDatabaseForExample () {
@@ -49,14 +46,13 @@ function setupDatabaseForExample () {
 
   setTimeout(() => {
     console.log('dog 4')
-    pool.query("UPDATE my_dogs SET age=3 WHERE id=2")
+    pool.query('UPDATE my_dogs SET age=3 WHERE id=2')
   }, 0.3 * seconds * 1000)
 
   setTimeout(() => {
     console.log('dog 5')
-    pool.query("DELETE FROM my_dogs WHERE id=1")
+    pool.query('DELETE FROM my_dogs WHERE id=1')
   }, 0.4 * seconds * 1000)
-
 
   setTimeout(() => {
     console.log('CLOSING setup pool.')
@@ -75,7 +71,8 @@ function setupDatabaseForExample () {
             name varchar, 
             age int, 
             weight float
-          )`)})
+          )`)
+      })
       .then(() => {
         return pool.query("INSERT INTO my_dogs (name, age, weight) VALUES ('Taiko', 3, 87)")
       })

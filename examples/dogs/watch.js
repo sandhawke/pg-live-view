@@ -15,7 +15,6 @@ v.on('appear', dog => {
   dog.on('change', (old, current) => {
     console.log('Dog record changed:\n', old, '\n => \n', current)
   })
-
 })
 
 v.on('stable', () => {

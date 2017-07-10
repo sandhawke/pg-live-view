@@ -1,18 +1,24 @@
 'use strict'
 
-const canonicalizePropertiesArgument = require('./props-arg')
 const pg = require('pg')
-const EventEmitter = require('eventemitter3')
-const SQL = require('sql-template-strings')
 const debug = require('debug')('View')
-const QueryStream = require('pg-query-stream')
+const EventEmitter = require('eventemitter3')
+// const canonicalizePropertiesArgument = require('./props-arg')
+// const SQL = require('sql-template-strings')
+// const QueryStream = require('pg-query-stream')
 
 class View {
   constructor (tablename, opts = {}) {
     this._ee = new EventEmitter()
     // this.filter = canonicalizePropertiesArgument(filter)
     this.tableName = tablename
-    console.assert(tablename)
+    debug('opts', opts)
+    debug('DTF? ', opts.dropTableFirst)
+    
+    this.dropTableFirst = opts.dropTableFirst
+    debug('DTF? ', opts.dropTableFirst)
+    debug('DTF? ', this.dropTableFirst)
+    this.createUsingSQL = opts.createUsingSQL
 
     // If you have a lot of views, it makes a lot of sense to have
     // them use the same pool, so create it yourself and pass it in
@@ -32,7 +38,7 @@ class View {
         // console.log('PROXY GET', target, JSON.stringify(name), typeof name)
         if (name === 'on') {
           let ee = this.rowEE.get(target)
-          if (ee == undefined) {
+          if (ee === undefined) {
             ee = new EventEmitter()
             this.rowEE.set(target, ee)
             debug('new ee for row', target, ee)
@@ -51,11 +57,10 @@ class View {
         // mark it dirty, and SQL UPDATE soon
         //
         // and use .deleted = true as delete record, I think.
-        // 
+        //
         console.error('set', target, name, value)
       }
     }
-
 
     // this WAS down in on('appear'), but then I wanted the listenClient
     // for use in .add(), so I moved it up here.  The comment was:
@@ -65,25 +70,27 @@ class View {
     // have some of this data cached in memory and can give some
     // immediate results.  So, better to wait for the 'appear' handler
     // to be added, I think.
-    this.startListening()
+    this.dropTableIfNeeded()
+      .then(this.createTableIfNeeded.bind(this))
+      .then(this.startListening.bind(this))
       .then(() => {
         if (this.pleaseClose) this.close()
       })
-      .then(() => this.startQuery())
+      .then(this.startQuery.bind(this))
       .then(() => {
         debug('query completed')
         this.ready = true
         if (this.pleaseClose) this.close()
       })
-    
+
     // returns syncronously; will buffer operations until connection is ready
   }
 
   /**
-   * Add a new database record with this data.  
+   * Add a new database record with this data.
    *
    * For now, don't give it an id; let the database asign one.
-   * 
+   *
    * Returns a promise for the object when it appears back again, with
    * its id.
    *
@@ -97,25 +104,25 @@ class View {
    */
   add (data) {
     return new Promise((resolve, reject) => {
-    if (data.id) {
-      throw ('not implemented')
-    }
-    
+      if (data.id) {
+        throw Error('not implemented')
+      }
+
     // check that it meets filter?
 
     // check that properties match schema?
 
-    const props = []
-    const dollars = []
-    const values = []
-    let counter = 1
-    for (let key of Object.keys(data)) {
-      props.push(key)
-      dollars.push('$' + counter++)
-      values.push(data[key])
-    }
+      const props = []
+      const dollars = []
+      const values = []
+      let counter = 1
+      for (let key of Object.keys(data)) {
+        props.push(key)
+        dollars.push('$' + counter++)
+        values.push(data[key])
+      }
 
-    this.query(`INSERT INTO ${this.tableName} (${props.join(', ')}) VALUES (${dollars.join(', ')}) RETURNING *`, values)
+      this.query(`INSERT INTO ${this.tableName} (${props.join(', ')}) VALUES (${dollars.join(', ')}) RETURNING *`, values)
       .then(res => {
         debug('creation INSERT returned', res.rows[0].id)
         // it doesn't matter if the NOTIFY arrives before or after the INSERT
@@ -126,10 +133,10 @@ class View {
       })
     })
   }
-  
+
   close () {
     // remove triggers/function?   Nah.
-    
+
     if (this.ready) {
       this.stopListen()
       if (this.myPool) {
@@ -144,12 +151,12 @@ class View {
       this.pleaseClose = true
     }
   }
-  
+
   // I like to hide the eventemitter interface, for now at least, to
   // reduce ... weird things.
-  
+
   on (eventName, callback) {
-    if (eventName in {appear:1, stable:1}) {
+    if (eventName in {appear: 1, stable: 1}) {
       this._ee.on(eventName, callback)
     } else {
       throw Error('unknown event name: ' + JSON.stringify(eventName))
@@ -176,7 +183,7 @@ class View {
       // only save a "Before" copy if we have an ee
       old = Object.assign({}, target)
     }
-    
+
     debug('database update from', target)
     debug('database update to  ', newdata)
 
@@ -192,7 +199,7 @@ class View {
 
     debug('database update left target as', target)
     debug('database returning old as     ', old)
-    
+
     if (ee) {
       debug('emit change', old, proxy)
       ee.emit('change', old, proxy)
@@ -200,7 +207,7 @@ class View {
       debug('no event emitter')
     }
   }
-  
+
   /**
    * Set up the necessary database triggers and start listening to our
    * notification channe.  Async: until this resolves, we might miss
@@ -261,8 +268,8 @@ class View {
             )
 
     return Promise.all(all)
-  }             
-  
+  }
+
   makeFunction () {
     if (this.pleaseClose) return Promise.resolve()
     return this.query(`
@@ -301,9 +308,33 @@ class View {
     )
   }
 
+  dropTableIfNeeded () {
+    debug('dropTableIfNeeded', this.dropTableFirst)
+    if (this.dropTableFirst) {
+      debug('trying to drop table')
+      return this.query(`DROP TABLE IF EXISTS ${this.tableName}`)
+    } else {
+      return Promise.resolve()
+    }
+  }
+
+  createTableIfNeeded () {
+    debug('createTableIfNeeded', this.createUsingSQL)
+    if (this.createUsingSQL) {
+      debug('trying to create table')
+      return this.query(
+        `CREATE TABLE IF NOT EXISTS ${this.tableName} (
+           id serial primary key,
+           ${this.createUsingSQL}
+         )`)
+    } else {
+      return Promise.resolve()
+    }
+  }
+
   startQuery () {
     return (
-      this.pool.query(`SELECT * FROM ${this.tableName}`)
+      this.query(`SELECT * FROM ${this.tableName}`)
         .then(res => {
           for (let row of res.rows) {
             this.appear(row)
@@ -337,7 +368,7 @@ class View {
     debug('generating APPEAR', data)
     let proxy = this.proxies.get(data.id)
     if (!proxy) {
-      debug('new proxy needed for',  data.id)
+      debug('new proxy needed for', data.id)
       proxy = new Proxy(data, this.handler)
       this.proxies.set(data.id, proxy)
       debug('generating APPEAR on proxy', proxy)

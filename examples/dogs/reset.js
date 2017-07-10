@@ -11,7 +11,8 @@ pool.query(`DROP TABLE IF EXISTS my_dogs`)
             name varchar, 
             age int, 
             weight float
-          )`)})
+          )`)
+  })
   .then(() => {
     pool.query("INSERT INTO my_dogs (name, age, weight) VALUES ('Tsuzumi', 2, 61)")
     pool.query("INSERT INTO my_dogs (name, age, weight) VALUES ('Mako', 3, 400)")
@@ -22,4 +23,3 @@ pool.query(`DROP TABLE IF EXISTS my_dogs`)
     pool.end()
     console.log('table my_dogs dropped and recreated, with a few rows')
   })
-
