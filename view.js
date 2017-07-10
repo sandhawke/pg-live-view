@@ -26,38 +26,24 @@ class View {
 
     this.proxies = new Map()
 
-    this.rowEE = new Map() // id => the EventEmitter for that row, if there is one
+    this.rowEE = new Map() // target->EventEmitter for that target (if exists)
     this.handler = {
       get: (target, name) => {
         // console.log('PROXY GET', target, JSON.stringify(name), typeof name)
         if (name === 'on') {
-          let ee = this.rowEE.get(target.id)
+          let ee = this.rowEE.get(target)
           if (ee == undefined) {
             ee = new EventEmitter()
-            this.rowEE.set(target.id, ee)
-            debug('new ee for row', target.id, ee)
+            this.rowEE.set(target, ee)
+            debug('new ee for row', target, ee)
           } else {
-            debug('existing ee for row', target.id, ee)
+            debug('existing ee for row', target, ee)
           }
           return ee.on.bind(ee)
-        } else if (name === '_gotDatabaseUpdate') {
+        } else if (name === '_targetBehindProxy') {
           // weird trick to reach through the proxy   :-/
           // Maybe make this a Symbol so there chance of collision?
-          return (newdata => {
-            debug('database update from', target)
-            debug('database update to  ', newdata)
-            const old = Object.assign({}, target)
-            for (let key of Object.keys(target)) {
-              target[key] = newdata[key]
-              delete newdata[key]
-            }
-            for (let key of Object.keys(newdata)) {
-              target[key] = newdata[key]
-            }
-            debug('database update left target as', target)
-            debug('database returning old as     ', old)
-            return old
-          })
+          return target
         }
         return target[name]
       },
@@ -69,22 +55,68 @@ class View {
         console.error('set', target, name, value)
       }
     }
+
+
+    // this WAS down in on('appear'), but then I wanted the listenClient
+    // for use in .add(), so I moved it up here.  The comment was:
+    //
+    // We could probably do this in constructor, knowing no events
+    // could occur until at least a tick(), but maybe someday we'll
+    // have some of this data cached in memory and can give some
+    // immediate results.  So, better to wait for the 'appear' handler
+    // to be added, I think.
+    this.startListening()
+      .then(() => this.startQuery())
+      .then(() => {
+        debug('query completed')
+      })
     
     // returns syncronously; will buffer operations until connection is ready
   }
 
   /**
-   * Add a new database record with this data
+   * Add a new database record with this data.  
    *
-   * Returns a promise of the data being added (not currently of the
-   * data coming back, with the proxy, which might be nice.)
+   * For now, don't give it an id; let the remote end asign one.
+   * 
+   * Returns a promise for that id.
+   *
+   * It would be NICE to allow us to create the proxy here, now,
+   * synchronously, but I believe that would require having another
+   * column in the table (creation_id) so that we could recognize our
+   * own creation coming back in the trigger, since it might come back
+   * before 'RETURNING id' tells us our response.  Oh, unless maybe we
+   * can do it OVER THE LISTEN CLIENT?
+
+
+
+A proxy will * If data has a .id property, it must be distinct from
+any other * .id value in the database.  If it has no .id, a temporary
+* negative one will be assigned before returning; it will be *
+modified to the global one from the database at some point.
+   *
+   * Returns quickly (synchronously) with a usable proxy object, which
+   * you can watch and keep altering.
    */
   add (data) {
-    // check that id is unique
-    // return a promise of saved-to-disk?  or of loop-back?!
+    if (data.id) {
+      throw ('not implemented')
+    }
+    
     // check that it meets filter?
+
     // check that properties match schema?
-    // maybe distribute in-memory as well.
+
+    // make a copy of the backing object, to avoid the temptation for
+    // caller to edit it, rather than going throught he proxy
+    const target = Object.assign({}, data)
+    const proxy = new Proxy(target, this.handler)    
+
+    // If you want to know about rows added by other parts of the same
+    // process, you want listen for 'added', but these objects do not
+    // necessarily have .id fields.
+    this._ee.emit('added', proxy)
+
     const props = []
     const dollars = []
     const values = []
@@ -94,7 +126,24 @@ class View {
       dollars.push('$' + counter++)
       values.push(data[key])
     }
-    return this.query(`INSERT INTO ${this.tableName} (${props.join(', ')}) VALUES (${dollars.join(', ')})`, values)
+
+    // we have to do this over the listenClient, not the pool, to make
+    // sure we get the id back here BEFORE the trigger runs.
+    // Otherwise, when appear looks in this.proxies, this wont be
+    // there, and it'll create a new proxy.
+    this.listenClient.query(`INSERT INTO ${this.tableName} (${props.join(', ')}) VALUES (${dollars.join(', ')}) RETURNING id`, values)
+      .then(res => {
+        debug('creation INSERT returned', res.rows[0].id)
+        target.id = res.rows[0].id
+        this.proxies.set(target.id, proxy)
+        const ee = this.rowEE.get(target)
+        if (ee) {
+          ee.emit('saved', proxy)
+        }
+        this._ee.emit('appear', proxy)
+      })
+
+    return proxy
   }
   
   close () {
@@ -118,17 +167,6 @@ class View {
   on (eventName, callback) {
     if (eventName === 'appear') {
       this._ee.on(eventName, callback)
-
-      // We could probably do this in constructor, knowing no events
-      // could occur until at least a tick(), but maybe someday we'll
-      // have some of this data cached in memory and can give some
-      // immediate results.  So, better to wait for the 'appear' handler
-      // to be added, I think.
-      this.startListening()
-        .then(() => this.startQuery())
-        .then(() => {
-          debug('query completed')
-        })
     } else {
       throw Error('unknown event name:', eventName)
     }
@@ -143,6 +181,42 @@ class View {
     return this.pool.query(text, data)
   }
 
+  handleUpdateEvent (newdata) {
+    debug('update on', newdata.id, JSON.stringify(newdata))
+    const id = newdata.id // in one version we overwrote .id later
+    const proxy = this.proxies.get(id)
+    const target = proxy._targetBehindProxy
+    const ee = this.rowEE.get(target)
+    let old
+    if (ee) {
+      // only save a "Before" copy if we have an ee
+      old = Object.assign({}, target)
+    }
+    
+    debug('database update from', target)
+    debug('database update to  ', newdata)
+
+    // This totally does not work for deep or linked objects...
+    //
+    // It should be if a field is a .id for another object, then
+    // we make this a js link here.   That'd be cool.
+
+    for (let key of Object.keys(target)) {
+      delete target[key]
+    }
+    Object.assign(target, newdata)
+
+    debug('database update left target as', target)
+    debug('database returning old as     ', old)
+    
+    if (ee) {
+      debug('emit change', old, proxy)
+      ee.emit('change', old, proxy)
+    } else {
+      debug('no event emitter')
+    }
+  }
+  
   /**
    * Set up the necessary database triggers and start listening to our
    * notification channe.  Async: until this resolves, we might miss
@@ -158,6 +232,7 @@ class View {
 
     all.push(this.pool.connect()
              .then(client => {
+               this.listenClient = client
                this.stopListen = () => {
                  client.release()
                  // debug('client.release()', client.release, client.release())
@@ -177,24 +252,16 @@ class View {
                        if (op === 'INSERT') {
                          this.appear(data)
                        } else if (op === 'DELETE') {
-                         const ee = this.rowEE.get(data.id)
+                         const proxy = this.proxies.get(data.id)
+                         const target = proxy._targetBehindProxy
+                         const ee = this.rowEE.get(target)
                          if (ee) {
                            ee.emit('disappear', data)
                          }
-                         this.rowEE.delete(data.id)
+                         this.rowEE.delete(target)
                          this.proxies.delete(data.id)
                        } else if (op === 'UPDATE') {
-                         const id = data.id // data.id gets deleted in copying
-                         debug('update on', data.id, JSON.stringify(data))
-                         const proxy = this.proxies.get(id)
-                         const old = proxy._gotDatabaseUpdate(data)
-                         const ee = this.rowEE.get(id)
-                         if (ee) {
-                           debug('emit change', old, proxy)
-                           ee.emit('change', old, proxy)
-                         } else {
-                           debug('no event emitter')
-                         }
+                         this.handleUpdateEvent(data)
                        } else {
                          throw new Error('unexpected database change code')
                        }
@@ -280,12 +347,16 @@ class View {
 
   appear (data) {
     debug('generating APPEAR', data)
-    const old = this.proxies.get(data.id)
-    if (old) throw Error('second appear')
-    const proxy = new Proxy(data, this.handler)
-    this.proxies.set(data.id, proxy)
-    debug('generating APPEAR on proxy', proxy)
-    this._ee.emit('appear', proxy)
+    let proxy = this.proxies.get(data.id)
+    if (!proxy) {
+      debug('new proxy needed for',  data.id)
+      proxy = new Proxy(data, this.handler)
+      this.proxies.set(data.id, proxy)
+      debug('generating APPEAR on proxy', proxy)
+      this._ee.emit('appear', proxy)
+    } else {
+      debug('duplicate appear for', data.id)
+    }
   }
 }
 

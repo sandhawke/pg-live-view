@@ -44,7 +44,7 @@ function setupDatabaseForExample () {
 
   setTimeout(() => {
     console.log('dog 3')
-    pool.query("INSERT INTO my_dogs VALUES (3, 'Mako', 3, 400)")
+    pool.query("INSERT INTO my_dogs VALUES (4, 'Mako', 3, 400)")
   }, 0.2 * seconds * 1000)
 
   setTimeout(() => {
@@ -71,13 +71,13 @@ function setupDatabaseForExample () {
       .then(() => {
         return pool.query(`
           CREATE TABLE IF NOT EXISTS my_dogs (
-            id int primary key, 
+            id serial primary key, 
             name varchar, 
             age int, 
             weight float
           )`)})
       .then(() => {
-        return pool.query("INSERT INTO my_dogs VALUES (1, 'Taiko', 3, 87)")
+        return pool.query("INSERT INTO my_dogs (name, age, weight) VALUES ('Taiko', 3, 87)")
       })
   )
 }
