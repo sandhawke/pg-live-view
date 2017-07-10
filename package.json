@@ -4,7 +4,8 @@
   "description": "convenient way to work with simple postgres data",
   "main": "view.js",
   "scripts": {
-    "test": "standard && tap --cov test[a-z0-9-_]*.js"
+    "test": "standard && tap --cov test[a-z0-9-_]*.js",
+    "coverage": "istanbul cover test[a-z0-9-_]*.js && firefox coverage/lcov-report/pg-live-view/view.js.html"
   },
   "repository": {
     "type": "git",
