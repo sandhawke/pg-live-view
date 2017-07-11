@@ -7,21 +7,25 @@ class Dispenser {
   constructor (opts) {
     Object.assign(this, opts)
     if (!this.pool) {
-      this.pool = new pg.Pool({database: this.database, max:3})
+      this.pool = new pg.Pool({database: this.database, max: 3})
       this.endPoolOnClose = true
     }
     if (!this.seqName) {
       this.seqName = 'client_assigned_id_seq'
     }
-    if (!this.blockSize) {  // only used for testing, right now
+    if (!this.blockSize) {
       this.blockSize = 10000
     }
-    
+    if (!this.innerBlockSize) {
+      this.innerBlockSize = this.blockSize
+    }
+
     this.nextId = 0
     this.maxId = -1
     this.postponed = []
-    
-    this.create = `CREATE SEQUENCE ${this.seqName} INCREMENT BY 10000 START 10000`
+
+    this.create = `CREATE SEQUENCE ${this.seqName} 
+                   INCREMENT BY ${this.blockSize} START ${this.blockSize}`
     this.fetch = `SELECT nextval('${this.seqName}')`
   }
 
@@ -41,6 +45,8 @@ class Dispenser {
    * gets a new client-id.  It hurts my soul a little to use digits
    * instead of bits, but it makes debugging a little easier, and
    * the computer doesn't care.
+   *
+   * call this pg-serial ?  pg-fast-serial ?
    */
   next () {
     debug(`next()  nextid=${this.nextId}, maxId=${this.maxId}`)
@@ -70,12 +76,12 @@ class Dispenser {
         debug('fetch result', res)
         const id = parseInt(res.rows[0].nextval)
         this.nextId = id
-        this.maxId = id + this.blockSize - 1
+        this.maxId = id + this.innerBlockSize - 1
         debug('postponed:', this.postponed.length)
         while (this.postponed.length) {
           debug(`a postponed, nextid=${this.nextId}, maxId=${this.maxId}`)
           if (this.nextId <= this.maxId) {
-            const [resolve, reject] = this.postponed.shift()
+            const [resolve] = this.postponed.shift()
             const id = this.nextId
             this.nextId++
             debug('resolving as', id)
@@ -89,7 +95,7 @@ class Dispenser {
       })
       .catch(e => {
         debug('fetch error', e)
-        if (e.code === "42P01") {
+        if (e.code === '42P01') {
           if (this.triedCreatingSequence) {
             debug('second failure, aboring')
             throw e
@@ -106,15 +112,15 @@ class Dispenser {
       })
   }
 
-    close () {
-      if (this.endPoolOnClose) {
-        debug('calling pool.end', this.pool.end)
-        this.pool.end()
+  close () {
+    if (this.endPoolOnClose) {
+      debug('calling pool.end', this.pool.end)
+      this.pool.end()
           .then(() => {
             debug('pool end resolved')
           })
-      }
     }
   }
+  }
 
-  module.exports = Dispenser
+module.exports = Dispenser

@@ -3,8 +3,8 @@
 const pg = require('pg')
 const debug = require('debug')('View')
 const EventEmitter = require('eventemitter3')
-const setdefault = require('setdefault')
-const IdDispenser = require('pg-id-dispenser')
+const setdefault = require('./setdefault')
+const IdDispenser = require('./pg-id-dispenser')
 
 // const canonicalizePropertiesArgument = require('./props-arg')
 // const SQL = require('sql-template-strings')
@@ -53,7 +53,7 @@ class View {
     this.needToSave = new Map()
 
     this.dispenser = new IdDispenser({database: this.database})
-    
+
     // returns syncronously, of course, since it's a constructor
     //
     // on(...) and add(...) will invoke connect() for us and buffer until
@@ -147,7 +147,7 @@ class View {
     return (
       this.query("SELECT nextval('client_assigned_id')")
         .then(res => {
-          
+
         })
     )
   }
