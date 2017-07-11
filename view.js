@@ -257,7 +257,7 @@ class View {
     // UGH -- this should return a promise,
     // so we can be fully shut down before
     // calling t.end() in testing
-    
+
     // remove triggers/function?   Nah.
     return new Promise((resolve, reject) => {
       this.dispenser.close()
