@@ -46,9 +46,9 @@ test('one item in each of two dispenser', t => {
   })
 })
 
-test('12 in seq with blocksize 3', t => {
+test('12 in seq with innerblocksize 3', t => {
   dbReset().then(() => {
-    const d = new Dispenser({seqName, blockSize: 3})
+    const d = new Dispenser({seqName, innerBlockSize: 3})
 
     const all = []
     for (let i = 0; i < 12; i++) {
