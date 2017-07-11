@@ -5,7 +5,7 @@
   "main": "view.js",
   "scripts": {
     "test": "standard && tap --cov test[a-z0-9-_]*.js",
-    "coverage": "istanbul cover test[a-z0-9-_]*.js && firefox coverage/lcov-report/pg-live-view/view.js.html"
+    "coverage": "istanbul cover all-tests.js && firefox coverage/lcov-report/pg-live-view/view.js.html"
   },
   "repository": {
     "type": "git",

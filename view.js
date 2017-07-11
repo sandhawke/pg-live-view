@@ -18,6 +18,8 @@ const IdDispenser = require('./pg-id-dispenser')
  *   dropTableFirst: useful for testing
  *   createUsingSQL: create table if missing, using these columns
  *                   (we'll supply the id column)
+ *   changeNow: if truthy, then x.p=v ; x.p will show v, even before
+ *              it's been confirmed as in the database
  *
  */
 class View {
@@ -50,7 +52,7 @@ class View {
       get: this.proxyHandlerGet.bind(this),
       set: this.proxyHandlerSet.bind(this)
     }
-    this.needToSave = new Map()
+    this.newLocalValue = new Map()
 
     this.dispenser = new IdDispenser({database: this.database})
 
@@ -81,16 +83,26 @@ class View {
       // Maybe make this a Symbol so there chance of collision?
       return target
     }
+    if (this.changeNow) {
+      const localValues = this.newLocalValue.get(target)
+      if (localValues) {
+        const result = localValues.get(name)
+        if (result !== undefined) {
+          return result
+        }
+      }
+    }
     return target[name]
   }
 
-  proxyHandlerSet (target, name, value) {
-    debug('set', target, name, value)
-    target[name] = value
-    setdefault(this.needToSave, target, new Set()).add(name)
+  proxyHandlerSet (target, name, value, receiver) {
+    // not sure what to do about receiver...
+    debug('set', target, name, value, receiver)
+    setdefault(this.newLocalValue, target, new Map()).set(name, value)
     // do it on the nextTick so several of these in a row
     // end up as only one UPDATE operation
     process.nextTick(this.save.bind(this, target))
+    return true
   }
 
   save (target) {
@@ -102,20 +114,23 @@ class View {
       match be part of the the WHERE clause.
 
       And the etag is the sha of the stable-json of the row ?  Or it's
-      an objid from our objid generator?
-     */
-    const names = this.needToSave.get(target)
-    if (!names || names.length === 0) {
-      // someone else did it already
+      an opague dispensed id?
+    */
+    const localValues = this.newLocalValue.get(target)
+    if (!localValues || localValues.size === 0) {
+      // this has already gone though...
       return Promise.resolve()
     }
-    this.needToSave.delete(target)
+
+    // At this point nothing stops us from saving many times; the
+    // localValues only go away when we get a change from the remote.
+
     const sets = []
     const vals = []
     let counter = 1
-    for (let key of Object.keys(target)) {
+    for (let [key, value] of localValues.entries()) {
       sets.push(key + '=$' + counter++)
-      vals.push(target[key])
+      vals.push(value)
     }
     const setstr = sets.join(', ')
     const q1 = `UPDATE ${this.tableName} SET ${setstr} WHERE id=${target.id}`
@@ -273,6 +288,11 @@ class View {
       delete target[key]
     }
     Object.assign(target, newdata)
+
+    // whatever local changes we might have made get wiped out at this
+    // point, having gotten a new value from the server.  With etags/versions
+    // we could perhaps be more graceful about this.
+    this.newLocalValue.delete(target)
 
     debug('database update left target as', target)
     debug('database returning old as     ', old)

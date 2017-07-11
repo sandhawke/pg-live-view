@@ -110,3 +110,68 @@ test('second view after some adds', t => {
       })
     })
 })
+
+test('set', t => {
+  t.plan(7)
+  const v = new View('testing_table_live_view_1',
+                     { dropTableFirst: true, createUsingSQL: `a text` })
+
+  v.on('appear', obj => {
+    t.equal(obj.a, 'Hello')
+
+    obj.on('change', (from, to) => {
+      t.equal(from.id, obj.id)
+      t.equal(to.id, obj.id)
+      t.equal(from.a, 'Hello')
+      t.equal(to.a, 'Goodbye!')
+
+      // obj.delete()
+      v.query('DELETE FROM testing_table_live_view_1')
+    })
+
+    obj.on('disappear', partial => {
+      t.equal(partial.id, obj.id)
+      v.close()
+      t.end()
+    })
+
+    obj.a = 'Goodbye!'
+    t.equal(obj.a, 'Hello')  // still 
+    // v.query("UPDATE testing_table_live_view_1 SET a='Goodbye!'")
+  })
+
+  v.add({a: 'Hello'})
+})
+
+test('set with changeNow', t => {
+  t.plan(7)
+  const v = new View('testing_table_live_view_1',
+                     { dropTableFirst: true, createUsingSQL: `a text`,
+                       changeNow: true })
+
+  v.on('appear', obj => {
+    t.equal(obj.a, 'Hello')
+
+    obj.on('change', (from, to) => {
+      t.equal(from.id, obj.id)
+      t.equal(to.id, obj.id)
+      t.equal(from.a, 'Hello')
+      t.equal(to.a, 'Goodbye!')
+
+      // obj.delete()
+      v.query('DELETE FROM testing_table_live_view_1')
+    })
+
+    obj.on('disappear', partial => {
+      t.equal(partial.id, obj.id)
+      v.close()
+      t.end()
+    })
+
+    obj.a = 'Goodbye!'
+    t.equal(obj.a, 'Goodbye!')  // because of changeNow
+    // v.query("UPDATE testing_table_live_view_1 SET a='Goodbye!'")
+  })
+
+  v.add({a: 'Hello'})
+})
