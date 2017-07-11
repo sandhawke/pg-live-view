@@ -4,7 +4,7 @@ const test = require('tape')
 const View = require('.')
 const debug = require('debug')('testing')
 
-test(t => {
+test('simple add and appear', t => {
   t.plan(1)
   const v = new View('testing_table_live_view_1',
                      { dropTableFirst: true, createUsingSQL: `a text` })
@@ -50,7 +50,7 @@ test(t => {
 })
 
 test('watch between different views', t => {
-  t.plan(6)
+  // t.plan(6)
   const v = new View('testing_table_live_view_1',
                      { dropTableFirst: true, createUsingSQL: `a text` })
   v.add({a: 'Hello'})
@@ -60,7 +60,7 @@ test('watch between different views', t => {
     debug('v2', v2)
 
     v2.on('appear', obj => {
-      t.equal(obj.a, 'Hello')
+      t.equal(obj.a, 'Hello')   // WTF???   SOMETIMES THIS GETS 'Hello SECOND'
 
       obj.on('change', (from, to) => {
         t.equal(from.id, obj.id)
@@ -74,9 +74,14 @@ test('watch between different views', t => {
 
       obj.on('disappear', partial => {
         t.equal(partial.id, obj.id)
-        v.close()
-        v2.close()
-        t.end()
+        Promise.all([
+          v.close(),
+          v2.close()
+        ]).then(() => {
+          console.log('READY TO CALL t.end()')
+          setTimeout(t.end.bind(t), 300)
+          // t.end()
+        })
       })
 
       // obj.a = 'Goodbye!'
@@ -85,19 +90,23 @@ test('watch between different views', t => {
   })
 })
 
+test('sleep between tests', t => {
+  setTimeout(t.end.bind(t), 0)
+})
+
 test('second view after some adds', t => {
   t.plan(2)
   const v = new View('testing_table_live_view_1',
                      { dropTableFirst: true, createUsingSQL: `a text` })
   v.add({a: 'Hello'})
-  v.add({a: 'Hello 2'})
-    .then(() => {
+  v.add({a: 'Hello SECOND'})
+    .on('change', () => {
       const v2 = new View('testing_table_live_view_1')
 
       let counter = 0
       v2.on('appear', obj => {
         counter++
-        if (obj.a === 'Hello' || obj.a === 'Hello 2') {
+        if (obj.a === 'Hello' || obj.a === 'Hello SECOND') {
           t.pass()
         } else {
           t.fail()
@@ -136,18 +145,19 @@ test('set', t => {
     })
 
     obj.a = 'Goodbye!'
-    t.equal(obj.a, 'Hello')  // still 
+    t.equal(obj.a, 'Hello')  // still
     // v.query("UPDATE testing_table_live_view_1 SET a='Goodbye!'")
   })
 
   v.add({a: 'Hello'})
 })
 
-test.only('set with changeNow and delete', t => {
+test('set with changeNow and delete', t => {
   t.plan(7)
   const v = new View('testing_table_live_view_1',
-                     { dropTableFirst: true, createUsingSQL: `a text`,
-                       changeNow: true })
+    { dropTableFirst: true,
+      createUsingSQL: `a text`,
+      changeNow: true })
 
   v.on('appear', obj => {
     t.equal(obj.a, 'Hello')
@@ -160,7 +170,7 @@ test.only('set with changeNow and delete', t => {
 
       // obj.delete()
       v.delete(obj.id)
-      //v.query('DELETE FROM testing_table_live_view_1')
+      // v.query('DELETE FROM testing_table_live_view_1')
     })
 
     obj.on('disappear', partial => {
@@ -175,4 +185,27 @@ test.only('set with changeNow and delete', t => {
   })
 
   v.add({a: 'Hello'})
+})
+
+test('add', t => {
+  t.plan(3)
+  const v = new View('testing_table_live_view_1',
+                     { dropTableFirst: true, createUsingSQL: `a text` })
+
+  v.on('appear', obj => {
+    debug('appear', obj)
+    t.equal(obj.a, 'Hello')
+    v.close()
+    t.end()
+  })
+
+  v.add({a: 'Hello'})
+    .on('id-assigned', id => {
+      t.assert(true)
+      debug('id assigned', id)
+    })
+    .on('change', (before, after) => {
+      t.assert(true)
+      debug('changed', before, after)
+    })
 })

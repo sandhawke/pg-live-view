@@ -77,7 +77,12 @@ class View {
       } else {
         debug('existing ee for row', target, ee)
       }
-      return ee.on.bind(ee)
+      debug('MAKING this.rowEE', this.rowEE)
+      // return ee.on.bind(ee)
+      return (...args) => {
+        debug('row.on called with', args)
+        return ee.on(...args)
+      }
     } else if (name === '_targetBehindProxy') {
       // weird trick to reach through the proxy   :-/
       // Maybe make this a Symbol so there chance of collision?
@@ -147,80 +152,132 @@ class View {
     return this.query(q1, [id])
   }
 
-/**
- * Add a new database record with this data.
- *
- * For now, don't give it an id; let the database asign one.
- *
- * Returns a promise for the object when it appears back again, with
- * its id.
- *
- * It'd be cool to return the id-less proxy now, so you can link it
- * into structures and stuff, but I don't know how to do that
- * without adding some kind of a creation-id column to each table we
- * view, or at least a flag that we created it so there's already
- * a proxy for it.  Right now, when we get the NOTIFY, there is NO WAY
- * to tell that was a row we just created and for which we are awaiting
- * the RETURNING value.
- */
+  /**
+   * Add a new database record with this data.
+   *
+   * Returns immediately with a proxy, like you'd have gotten from an
+   * 'appear' event, except it will not have a .id assigned for a
+   * little while.  If you have changeNow set, the row data you
+   * provided will be visible, otherwise the object will appear empty
+   * until it's confirmed from the server (which might do some data
+   * validation, etc).
+   */
   add (data) {
-    return new Promise((resolve, reject) => {
-      if (data.id) {
-        throw Error('not implemented')
-      }
+    if (data.id) {
+      throw Error('adding with id provided: not implemented')
+    }
 
-    // check that it meets filter?
+    // Leave the body empty until it comes back from database
+    const target = { _newlyThIng: data }
+    const proxy = new Proxy(target, this.handler)
 
-    // check that properties match schema?
+    const props = []
+    const dollars = []
+    const values = []
+    let counter = 1
+    for (let key of Object.keys(data)) {
+      // but let body will appear full, if you have changeNow set
+      setdefault(this.newLocalValue, target, new Map()).set(key, data[key])
 
-      const props = []
-      const dollars = []
-      const values = []
-      let counter = 1
-      for (let key of Object.keys(data)) {
-        props.push(key)
+      props.push(key)
+      dollars.push('$' + counter++)
+      values.push(data[key])
+    }
+
+    // we return synchronously before we know the id, but we'll
+    // fill it in pretty soon, here.
+    //
+    // WARNING: what might happen before the id is set, or before the
+    // INSERT is complete?   Like, what if you want to delete it?
+    // Or set it as the value of some other object?  Neither of those
+    // will work well before having an id, I expect.
+    this.dispenser.next()
+      .then(id => {
+        debug('id has been assigned', id)
+        target.id = id
+        this.proxiesById.set(id, proxy)
+        debug('PROXIES SET', this.proxiesById)
+
+        // probably not needed, but still, might be nice...
+        debug('USING this.rowEE', this.rowEE)
+        const ee = this.rowEE.get(target)
+        if (ee) {
+          ee.emit('id-assigned', id)
+        } else {
+          debug('no ee to get id-assigned event')
+        }
+
+        props.push('id')
         dollars.push('$' + counter++)
-        values.push(data[key])
-      }
+        values.push(id)
+      })
+      .then(() => {
+        const f = () => {
+          this.query(`INSERT INTO ${this.tableName} (${props.join(', ')}) 
+                      VALUES (${dollars.join(', ')}) RETURNING *`, values)
+            .then(res => {
+              debug('creation INSERT returned row', res.rows[0])
 
-      const f = () => {
-        this.query(`INSERT INTO ${this.tableName} (${props.join(', ')}) VALUES (${dollars.join(', ')}) RETURNING *`, values)
-        .then(res => {
-          debug('creation INSERT returned', res.rows[0].id)
-          // it doesn't matter if the NOTIFY arrives before or after the INSERT
-          // returns; whichever one is first will create the Proxy and the
-          // other will just look it up
-          resolve(this.appear(res.rows[0]))
-          this._ee.emit('stable')
-        })
-      }
+              // Whenever the NOTIFY arrives, which migth be before or
+              // after this point where the INSERT returns, it will
+              // ignore the event because the id is already in proxiesById.
 
-      if (this.ready) {
-        f()
-      } else {
-        debug('.add but not ready, queued')
-        this.connect()
-        this._ee.on('ready', f)
-      }
-    })
+              Object.assign(target, res.rows[0])
+
+              // we could look for conflicts and warn someone... Emit
+              // a 'change-refused' event or something.
+              this.newLocalValue.delete(target)
+
+              const ee = this.rowEE.get(target)
+              if (ee) {
+                debug('emit change', {}, proxy)
+                ee.emit('change', {}, proxy)
+              }
+
+              debug('emitting appear')
+              this._ee.emit('appear', proxy)
+              this._ee.emit('stable')
+            })
+        }
+
+        if (this.ready) {
+          f()
+        } else {
+          debug('.add but not ready, queued')
+          this.connect()
+          this._ee.on('ready', f)
+        }
+      })
+
+    debug('add returning a proxy')
+    return proxy
   }
 
   close () {
-  // remove triggers/function?   Nah.
-
-    if (this.ready) {
-      this.stopListen()
-      if (this.endPoolOnClose) {
-        debug('calling pool.end', this.pool.end)
-        this.pool.end()
-        .then(() => {
-          debug('pool end resolved')
-        })
+    // UGH -- this should return a promise,
+    // so we can be fully shut down before
+    // calling t.end() in testing
+    
+    // remove triggers/function?   Nah.
+    return new Promise((resolve, reject) => {
+      this.dispenser.close()
+      if (this.ready) {
+        this.stopListen()
+        if (this.endPoolOnClose) {
+          debug('calling pool.end', this.pool.end)
+          this.pool.end()
+            .then(() => {
+              debug('pool end resolved')
+              this._ee.emit('closed')
+              resolve()
+            })
+        }
+      } else {
+        // it's too soon in the process, so just set a flag
+        this.pleaseClose = true
+        this._ee.on('closed', resolve)
       }
-    } else {
-    // it's too soon in the process, so just set a flag
-      this.pleaseClose = true
-    }
+    })
   }
 
 // I like to hide the eventemitter interface, for now at least, to
@@ -486,6 +543,7 @@ class View {
   appear (data) {
     debug('generating APPEAR', data)
     let proxy = this.proxiesById.get(data.id)
+    debug('PROXIES GET', this.proxiesById, proxy)
     if (!proxy) {
       debug('new proxy needed for', data.id)
       proxy = new Proxy(data, this.handler)
