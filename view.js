@@ -132,39 +132,19 @@ class View {
       sets.push(key + '=$' + counter++)
       vals.push(value)
     }
+    const targref = '$' + counter++
+    vals.push(target.id)
     const setstr = sets.join(', ')
-    const q1 = `UPDATE ${this.tableName} SET ${setstr} WHERE id=${target.id}`
+    const q1 = `UPDATE ${this.tableName} SET ${setstr} WHERE id=${targref}`
     return this.query(q1, vals)
   }
 
-  /**
-   * Returns the promise of an id that will be unique in the life of
-   * the SERVER, suitable as a id= for a new object or a version= for
-   * an update object.
-   *
-   * It's basically: SELECT nextval('client_assigned_id');
-   *
-   * ... Except we get them 10,000 at a time so 99.99% of the time this
-   * will resolve without any io, let along a server round-trip.
-   *
-   * If that seems "wasteful", just think of objids as 15-digits of
-   * client id (assigned by server) + 4 digits of local objid
-   * (assigned by that client).  And when the client runs out, it just
-   * gets a new client-id.  It hurts my soul a little to use digits
-   * instead of bits, but it makes debugging a little easier, and
-   * the computer doesn't care.
-   */
-  nextObjId () {
-    if (this.nextId < this.maxId) {
-      this.nextId++
-      return Promise.resolve(this.nextId)
+  delete (id) {
+    if (typeof id === 'object') {
+      throw TypeError('view.delete() given an object, not obj.id')
     }
-    return (
-      this.query("SELECT nextval('client_assigned_id')")
-        .then(res => {
-
-        })
-    )
+    const q1 = `DELETE FROM ${this.tableName} WHERE id=$1`
+    return this.query(q1, [id])
   }
 
 /**

@@ -143,7 +143,7 @@ test('set', t => {
   v.add({a: 'Hello'})
 })
 
-test('set with changeNow', t => {
+test.only('set with changeNow and delete', t => {
   t.plan(7)
   const v = new View('testing_table_live_view_1',
                      { dropTableFirst: true, createUsingSQL: `a text`,
@@ -159,7 +159,8 @@ test('set with changeNow', t => {
       t.equal(to.a, 'Goodbye!')
 
       // obj.delete()
-      v.query('DELETE FROM testing_table_live_view_1')
+      v.delete(obj.id)
+      //v.query('DELETE FROM testing_table_live_view_1')
     })
 
     obj.on('disappear', partial => {
