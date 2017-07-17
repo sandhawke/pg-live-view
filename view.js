@@ -65,7 +65,7 @@ class View {
   }
 
   proxyHandlerGet (target, name) {
-    debug('proxy get', target, JSON.stringify(name), typeof name)
+    // debug('proxy get', target, JSON.stringify(name), typeof name)
 
     // Maybe instead of returning a real EE, give a subset that requires the
     // events be 'disappear' and 'change', to avoid typos ?
@@ -75,14 +75,14 @@ class View {
       if (ee === undefined) {
         ee = new EventEmitter()
         this.rowEE.set(target, ee)
-        debug('new ee for row', target, ee)
+        // debug('new ee for row', target, ee)
       } else {
-        debug('existing ee for row', target, ee)
+        // debug('existing ee for row', target, ee)
       }
-      debug('MAKING this.rowEE', this.rowEE)
-      // return ee.on.bind(ee)
+      // debug('MAKING this.rowEE', this.rowEE)
+      // XX return ee.on.bind(ee)
       return (...args) => {
-        debug('row.on called with', args)
+        // debug('row.on called with', args)
         return ee.on(...args)
       }
     } else if (name === '_targetBehindProxy') {
@@ -198,7 +198,7 @@ class View {
         debug('id has been assigned', id)
         target.id = id
         this.proxiesById.set(id, proxy)
-        debug('PROXIES SET', this.proxiesById)
+        debug('PROXIES SET id=', JSON.stringify(id), this.proxiesById)
 
         // probably not needed, but still, might be nice...
         debug('USING this.rowEE', this.rowEE)
@@ -267,7 +267,7 @@ class View {
           if (this.ready) {
             this.stopListen()
             if (this.endPoolOnClose) {
-              debug('calling pool.end', this.pool.end)
+              debug('calling pool.end')
               this.pool.end()
                 .then(() => {
                   debug('pool end resolved')
@@ -553,6 +553,31 @@ class View {
     )
   }
 
+  async lookup (id) {
+    if (typeof id === 'string') {
+      id = parseInt(id)
+    }
+    // we've probably already got it cached
+    let proxy = this.proxiesById.get(id)
+    // but if not, let's do a separate query, to be sure
+    if (!proxy) {
+      debug('LOOKUP NEEDS id=', JSON.stringify(id), proxy, this.proxiesById)
+      const res = await this.query(`SELECT * FROM ${this.tableName} WHERE id = $1`, [id])
+      if (res.rowCount === 1) {
+        const row = res.rows[0]
+        proxy = this.appear(row)
+        // should we: ?? this._ee.emit('stable')
+      } else {
+        if (res.rowCount === 0) {
+          return undefined
+        }
+        throw Error('multiple results from id query, id=' + id)
+      }
+    }
+    debug('LOOKUP RETURNING FOR ID', id, proxy, this.proxiesById)
+    return proxy
+  }
+
 /*  not using this for the moment,
     in trying to debug...
     startQuery () {
@@ -576,7 +601,7 @@ class View {
   appear (data) {
     debug('generating APPEAR', data)
     let proxy = this.proxiesById.get(data.id)
-    debug('PROXIES GET', this.proxiesById, proxy)
+    debug('PROXIES GET ID=', data.id, this.proxiesById, 'PROXY=', proxy)
     if (!proxy) {
       debug('new proxy needed for', data.id)
       proxy = new Proxy(data, this.handler)
