@@ -394,7 +394,7 @@ class View {
            .then(client => {
              this.listenClient = client
              this.stopListen = () => {
-               client.release()
+               if (client.release) client.release()
                // debug('client.release()', client.release, client.release())
                // debug('client.end()', client.end, client.end())
                debug('listen-client .release called')
@@ -515,6 +515,7 @@ class View {
   }
 
   dropTableIfNeeded () {
+    if (this.pleaseClose) return Promise.resolve()
     debug('dropTableIfNeeded', this.dropTableFirst)
     if (this.dropTableFirst) {
       debug('trying to drop table')
@@ -525,6 +526,7 @@ class View {
   }
 
   createTableIfNeeded () {
+    if (this.pleaseClose) return Promise.resolve()
     debug('createTableIfNeeded', this.createUsingSQL)
     if (this.createUsingSQL) {
       debug('trying to create table')
@@ -539,6 +541,7 @@ class View {
   }
 
   startQuery () {
+    if (this.pleaseClose) return Promise.resolve()
     return (
     this.query(`SELECT * FROM ${this.tableName}`)
       .then(res => {
