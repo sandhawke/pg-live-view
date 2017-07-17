@@ -39,6 +39,10 @@ class View {
       this.endPoolOnClose = true
     }
 
+    // this.dispenser = new IdDispenser({pool: this.pool})
+    // trying this to debug 'tuple concurrently updated'
+    this.dispenser = IdDispenser.obtain()
+
     // For each row we hold in memory, there's a Proxy and its Target
     //
     // We hand out the Proxy, and keep the data cache in the Target.
@@ -53,8 +57,6 @@ class View {
       set: this.proxyHandlerSet.bind(this)
     }
     this.newLocalValue = new Map()
-
-    this.dispenser = new IdDispenser({database: this.database})
 
     // returns syncronously, of course, since it's a constructor
     //
@@ -261,22 +263,26 @@ class View {
     // remove triggers/function?   Nah.
     return new Promise((resolve, reject) => {
       this.dispenser.close()
-      if (this.ready) {
-        this.stopListen()
-        if (this.endPoolOnClose) {
-          debug('calling pool.end', this.pool.end)
-          this.pool.end()
-            .then(() => {
-              debug('pool end resolved')
-              this._ee.emit('closed')
+        .then(() => {
+          if (this.ready) {
+            this.stopListen()
+            if (this.endPoolOnClose) {
+              debug('calling pool.end', this.pool.end)
+              this.pool.end()
+                .then(() => {
+                  debug('pool end resolved')
+                  this._ee.emit('closed')
+                  resolve()
+                })
+            } else {
               resolve()
-            })
-        }
-      } else {
-        // it's too soon in the process, so just set a flag
-        this.pleaseClose = true
-        this._ee.on('closed', resolve)
-      }
+            }
+          } else {
+            // it's too soon in the process, so just set a flag
+            this.pleaseClose = true
+            this._ee.on('closed', resolve)
+          }
+        })
     })
   }
 
@@ -433,9 +439,10 @@ class View {
     return Promise.all(all)
   }
 
-  makeFunction () {
-    if (this.pleaseClose) return Promise.resolve()
-    return this.query(`
+  async makeFunction () {
+    if (this.pleaseClose) return
+
+    const sql = `
     CREATE OR REPLACE FUNCTION live_view_notify() RETURNS TRIGGER AS $$
     DECLARE 
         row json;
@@ -451,7 +458,30 @@ class View {
         RETURN NULL; 
     END;
     $$ LANGUAGE plpgsql;
-    `)
+    `
+    // This is a random number I generated; it must be different from
+    // what any other software is using, if it's also got postgres
+    // clients of this server.
+    // See https://stackoverflow.com/questions/40525684/tuple-concurrently-updated-when-creating-functions-in-postgresql-pl-pgsql
+
+    const myLockId = 8872355600218495941
+
+    // This is complex enough, I'm going to brave async/await....
+    // See https://node-postgres.com/features/transactions
+
+    const client = await this.pool.connect()
+
+    try {
+      await client.query('BEGIN')
+      await client.query(`SELECT pg_advisory_xact_lock(${myLockId})`)
+      await client.query(sql)
+      await client.query('COMMIT')
+    } catch (e) {
+      await client.query('ROLLBACK')
+      throw e
+    } finally {
+      client.release()
+    }
   }
 
   makeTrigger () {

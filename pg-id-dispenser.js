@@ -115,12 +115,24 @@ class Dispenser {
   close () {
     if (this.endPoolOnClose) {
       debug('calling pool.end', this.pool.end)
-      this.pool.end()
-          .then(() => {
-            debug('pool end resolved')
-          })
+      return (this.pool.end()
+              .then(() => {
+                debug('pool end resolved')
+              })
+      )
+    } else {
+      return Promise.resolve()
     }
   }
+}
+
+let main
+function obtain () {
+  if (!main) {
+    main = new Dispenser()
   }
+  return main
+}
+Dispenser.obtain = obtain
 
 module.exports = Dispenser
