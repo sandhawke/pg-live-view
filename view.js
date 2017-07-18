@@ -39,9 +39,9 @@ class View {
       this.endPoolOnClose = true
     }
 
-    // this.dispenser = new IdDispenser({pool: this.pool})
+    this.dispenser = new IdDispenser({pool: this.pool})
     // trying this to debug 'tuple concurrently updated'
-    this.dispenser = IdDispenser.obtain()
+    // this.dispenser = IdDispenser.obtain()
 
     // For each row we hold in memory, there's a Proxy and its Target
     //
@@ -64,6 +64,10 @@ class View {
     // it's ready.
   }
 
+  inspect () {
+    return `view(${this.tableName} rows=${this.proxiesById.size})`
+  }
+  
   proxyHandlerGet (target, name) {
     // debug('proxy get', target, JSON.stringify(name), typeof name)
 
@@ -266,6 +270,7 @@ class View {
         .then(() => {
           if (this.ready) {
             this.stopListen()
+            this.pleaseClose = true
             if (this.endPoolOnClose) {
               debug('calling pool.end')
               this.pool.end()
@@ -304,6 +309,10 @@ class View {
 
   query (text, data) {
     debug('QUERY', text, data)
+    if (this.pleaseClose) {
+      debug('QUERY WHILE CLOSING')
+      return Promise.resolve()
+    }
     return this.pool.query(text, data)
   }
 
