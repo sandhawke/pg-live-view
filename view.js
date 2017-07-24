@@ -10,12 +10,19 @@ const IdDispenser = require('./pg-id-dispenser')
 // const SQL = require('sql-template-strings')
 // const QueryStream = require('pg-query-stream')
 
+
+// This is a random number I generated; it must be different from
+// what any other software is using, if it's also got postgres
+// clients connecting to this server.
+// See https://stackoverflow.com/questions/40525684/tuple-concurrently-updated-when-creating-functions-in-postgresql-pl-pgsql
+
+const myLockId = 8872355600218495941
+
 /**
  *
  * Options:
  *   pool: a pg connection pool, if you want us to use yours
  *   database: a pg database id, otherwise we'll use the environment
- *   dropTableFirst: useful for testing
  *   createUsingSQL: create table if missing, using these columns
  *                   (we'll supply the id column)
  *   changeNow: if truthy, then x.p=v ; x.p will show v, even before
@@ -23,8 +30,14 @@ const IdDispenser = require('./pg-id-dispenser')
  *
  */
 class View {
-  constructor (tablename, opts = {}) {
-    this.tableName = tablename
+  constructor (viewname, spec, opts) {
+    if (!opts) throw ('all three arguments are required')
+
+    if (this.dropTableFirst) {
+      throw Error('view.dropTableFirst option has been removed')
+    }
+    
+    this.viewname = viewname
     this._ee = new EventEmitter()
 
     // I'm slightly dubious about this approach, but it's nicely DRY.
@@ -32,20 +45,23 @@ class View {
 
     // this.filter = canonicalizePropertiesArgument(filter)
 
-    // If you have a lot of views, it makes a lot of sense to have
-    // them use the same pool, so create it yourself and pass it in
+    if (!this.tableName) {
+      // should we perhaps get it from pg_table in spec, instead?
+      this.tableName = viewname
+    }
+    
     if (!this.pool) {
       this.pool = new pg.Pool({database: this.database})
       this.endPoolOnClose = true
     }
 
-    this.dispenser = new IdDispenser({pool: this.pool})
-    // trying this to debug 'tuple concurrently updated'
-    // this.dispenser = IdDispenser.obtain()
+    if (!this.dispenser) {
+      this.dispenser = new IdDispenser({pool: this.pool})
+    }
 
     // For each row we hold in memory, there's a Proxy and its Target
     //
-    // We hand out the Proxy, and keep the data cache in the Target.
+    // We hand out the Proxy, and keep the data cached in the Target.
     //
     // We (lazy) create an EventEmitter for the Target, only if someone
     // accesses its .on property.
@@ -269,7 +285,9 @@ class View {
       this.dispenser.close()
         .then(() => {
           if (this.ready) {
-            this.stopListen()
+
+            if (this.releaseClient) this.releaseClient()
+            
             this.pleaseClose = true
             if (this.endPoolOnClose) {
               debug('calling pool.end')
@@ -291,8 +309,8 @@ class View {
     })
   }
 
-// I like to hide the eventemitter interface, for now at least, to
-// reduce ... weird things.
+  // I like to hide the eventemitter interface, for now at least, to
+  // reduce ... weird things.
 
   on (eventName, callback) {
     if (eventName in {appear: 1, stable: 1}) {
@@ -358,99 +376,101 @@ class View {
   }
 
   /**
+   * async: Resolves when we're properly connected
+
+   BROKEN: fix when we actually need it for something
+
+  connected () {
+    if (this.ready) return Promise.resolve()
+    if (this.connecting) return new Promise((resolve, reject) => {
+      this._ee.on('ready', resolve)
+      this._ee.on('error', reject)
+    })
+    return this.connect()
+  }
+  */
+  
+  /**
    * Start the process of connecting, and poking at the database
    * however we need. Runs the startup query near the end. Emits
    * 'ready' event and sets this.ready=true at the point where it's
    * safe to start doing adds & updates.
    *
-   * async
+   * RESOLVES AT A STRANGE TIME.  Resolves immediately if someone else is already working on this; otherwise doesn't resolve until the startup query is done, which is long after we're ready to do stuff.
    */
-  connect () {
-    if (this.connecting || this.ready) return Promise.resolve()
+  async connect () {
+    if (this.ready) return
+    if (this.connecting) return // only one of us needs to do it
     this.connecting = true
-    return (
-      this.dropTableIfNeeded()
-        .then(this.createTableIfNeeded.bind(this))
-        .then(this.startListening.bind(this))
-        .then(() => {
-          this.connecting = false
-          this.ready = true
-          this._ee.emit('ready')
-          if (this.pleaseClose) this.close()
-        })
-        .then(this.startQuery.bind(this))
-        .then(() => {
-          debug('query completed')
-          if (this.pleaseClose) this.close()
-        })
-    )
+
+    // Pull one client out of the pool.  Use it in a transaction with
+    // advisory locking, so we can cleanly set up the table and
+    // trigger without interference, then use it for LISTEN, which
+    // also needs a private client.
+    
+    const client = await this.pool.connect()
+    this.releaseClient = () => {
+      if (client.release) {
+        client.release()
+        debug('listen-client .release called')
+      }
+    }
+
+    try {
+      await client.query('BEGIN')
+      await client.query(`SELECT pg_advisory_xact_lock(${myLockId})`)
+      await this.createTableIfNeeded(client)
+      await this.createTriggerFunction(client)
+      await this.createTrigger(client)
+      await client.query('COMMIT')
+    } catch (e) {
+      await client.query('ROLLBACK')
+      throw e
+    } finally {
+      // do not "client.release()" because we use it for LISTEN
+    }
+
+    client.on('notification', msg => this.notification(msg))
+    const sql = `LISTEN ${this.tableName}_notify`
+    await client.query(sql)
+    debug('listening via', sql)
+
+    this.connecting = false
+    this.ready = true
+    this._ee.emit('ready')
+    if (this.pleaseClose) await this.close()
+
+    await this.startQuery()
+    debug('startup query completed')
+    if (this.pleaseClose) await this.close()
   }
 
-  /**
-   * Set up the necessary database triggers and start listening to our
-   * notification channe.  Async: until this resolves, we might miss
-   * database changes.
-   */
-  startListening () {
-    const all = []
-    all.push(this.makeFunction()
-           .then(() => {
-             return this.makeTrigger()
-           })
-          )
 
-    all.push(this.pool.connect()
-           .then(client => {
-             this.listenClient = client
-             this.stopListen = () => {
-               if (client.release) client.release()
-               // debug('client.release()', client.release, client.release())
-               // debug('client.end()', client.end, client.end())
-               debug('listen-client .release called')
-             }
-             const sql = `LISTEN ${this.tableName}_notify`
-             return (
-               client.query(sql)
-                 .then(() => {
-                   debug('listening via', sql)
-                   // console.log('ON NOTIFICATION')
-                   client.on('notification', msg => {
-                     debug('postgres notification received:', msg)
-                     // console.log('***GOT NOTIFICATION', msg.payload)
-                     const [op, data] = JSON.parse(msg.payload)
-                     if (op === 'INSERT') {
-                       this.appear(data)
-                     } else if (op === 'DELETE') {
-                       const proxy = this.proxiesById.get(data.id)
-                       const target = proxy._targetBehindProxy
-                       const ee = this.rowEE.get(target)
-                       if (ee) {
-                         ee.emit('disappear', data)
-                       }
-                       this.rowEE.delete(target)
-                       this.proxiesById.delete(data.id)
-                     } else if (op === 'UPDATE') {
-                       this.handleUpdateEvent(data)
-                     } else {
-                       throw new Error('unexpected database change code')
-                     }
-                     this._ee.emit('stable')
-                   })
-                 })
-                 .catch(e => {
-                   client.release()
-                   console.error('cant listen', e.message, e.stack)
-                 })
-             )
-           })
-          )
-
-    return Promise.all(all)
+  notification (msg) {
+    debug('postgres notification received:', msg)
+    const [op, data] = JSON.parse(msg.payload)
+    if (op === 'INSERT') {
+      this.appear(data)
+    } else if (op === 'DELETE') {
+      const proxy = this.proxiesById.get(data.id)
+      const target = proxy._targetBehindProxy
+      const ee = this.rowEE.get(target)
+      if (ee) {
+        ee.emit('disappear', data)
+      }
+      this.rowEE.delete(target)
+      this.proxiesById.delete(data.id)
+    } else if (op === 'UPDATE') {
+      this.handleUpdateEvent(data)
+    } else {
+      throw new Error('unexpected database change code')
+    }
+    // alas, we don't have a way to cluster a bunch of inserts, so
+    // we need to do this after each one:
+    this._ee.emit('stable')
   }
 
-  async makeFunction () {
-    if (this.pleaseClose) return
-
+  async createTriggerFunction (conn) {
     const sql = `
     CREATE OR REPLACE FUNCTION live_view_notify() RETURNS TRIGGER AS $$
     DECLARE 
@@ -468,84 +488,52 @@ class View {
     END;
     $$ LANGUAGE plpgsql;
     `
-    // This is a random number I generated; it must be different from
-    // what any other software is using, if it's also got postgres
-    // clients of this server.
-    // See https://stackoverflow.com/questions/40525684/tuple-concurrently-updated-when-creating-functions-in-postgresql-pl-pgsql
-
-    const myLockId = 8872355600218495941
-
-    // This is complex enough, I'm going to brave async/await....
-    // See https://node-postgres.com/features/transactions
-
-    const client = await this.pool.connect()
-
-    try {
-      await client.query('BEGIN')
-      await client.query(`SELECT pg_advisory_xact_lock(${myLockId})`)
-      await client.query(sql)
-      await client.query('COMMIT')
-    } catch (e) {
-      await client.query('ROLLBACK')
-      throw e
-    } finally {
-      client.release()
-    }
+    await conn.query(sql)
   }
 
-  makeTrigger () {
-    if (this.pleaseClose) return Promise.resolve()
-  // DO *NOT* SQL-QUOTE the table names
+  async createTrigger (conn) {
+    /* Actually, let's drop it first, just in case we changed how we
+     * defined it.  If we didn't have our advisory lock, this would
+     * open up a window to missing events in a second view of the same
+     * table, BUT that's one of the reasons we do have the advisory
+     * lock.  
+     *
+     * Everyone using triggers named *_live_view needs to be using the
+     * same advisory lock! */
 
-  /* DO NOT drop the trigger, because that creates a window
-     where we'll miss events if we open up a second view on
-     the same table.  Trust that a trigger with this name
-     was defined by us.
-     return (
-     this.query(`
-     DROP TRIGGER IF EXISTS ${this.tableName}_live_view
-     ON ${this.tableName} CASCADE
-     `).then(() => {
-  */
+    // do NOT sql-quote the table name.
+    await this.query(`DROP TRIGGER IF EXISTS ${this.tableName}_live_view
+                      ON ${this.tableName} CASCADE`)
 
-    return (
-    this.query(`
-       CREATE TRIGGER ${this.tableName}_live_view
-       AFTER INSERT OR UPDATE OR DELETE ON ${this.tableName}
-           FOR EACH ROW EXECUTE PROCEDURE live_view_notify(); `)
-      .catch(e => {
-        if (e.code === '42710' && e.routine === 'CreateTrigger') {
-          // ignore error "Trigger Already Exists"
-        } else {
-          throw e
-        }
-      })
-    )
+    await this.query(`CREATE TRIGGER ${this.tableName}_live_view
+                      AFTER INSERT OR UPDATE OR DELETE ON ${this.tableName}
+                      FOR EACH ROW EXECUTE PROCEDURE live_view_notify(); `)
+
+    /* if we're not going to drop it, then do this:
+
+    catch (e) {
+      if (e.code === '42710' && e.routine === 'CreateTrigger') {
+        // ignore error "Trigger Already Exists"
+      } else {
+        throw e
+      }
+
+      */
   }
 
-  dropTableIfNeeded () {
-    if (this.pleaseClose) return Promise.resolve()
-    debug('dropTableIfNeeded', this.dropTableFirst)
-    if (this.dropTableFirst) {
-      debug('trying to drop table')
-      return this.query(`DROP TABLE IF EXISTS ${this.tableName}`)
-    } else {
-      return Promise.resolve()
-    }
-  }
-
-  createTableIfNeeded () {
-    if (this.pleaseClose) return Promise.resolve()
+  // In theory we could check to make sure the columns are right, but
+  // maybe better to catch that in looking at the results rows anyway.
+  async createTableIfNeeded () {
+    if (this.pleaseClose) return
     debug('createTableIfNeeded', this.createUsingSQL)
     if (this.createUsingSQL) {
       debug('trying to create table')
-      return this.query(
-      `CREATE TABLE IF NOT EXISTS ${this.tableName} (
+      // do NOT sql-quote this, but we SHOULD machine generate it
+      await this.query(
+        `CREATE TABLE IF NOT EXISTS ${this.tableName} (
            id serial primary key,
            ${this.createUsingSQL}
          )`)
-    } else {
-      return Promise.resolve()
     }
   }
 
