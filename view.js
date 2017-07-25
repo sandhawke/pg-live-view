@@ -3,20 +3,45 @@
 const pg = require('pg')
 const debug = require('debug')('View')
 const EventEmitter = require('eventemitter3')
-const setdefault = require('./setdefault')
+const setdefault = require('setdefault')
 const IdDispenser = require('./pg-id-dispenser')
 
 // const canonicalizePropertiesArgument = require('./props-arg')
 // const SQL = require('sql-template-strings')
 // const QueryStream = require('pg-query-stream')
 
-
 // This is a random number I generated; it must be different from
 // what any other software is using, if it's also got postgres
 // clients connecting to this server.
 // See https://stackoverflow.com/questions/40525684/tuple-concurrently-updated-when-creating-functions-in-postgresql-pl-pgsql
 
-const myLockId = 8872355600218495941
+const myLockId = 8872355600218495943
+
+/*
+ * View's this.state is always one of these values, and it only increments.
+ *
+ * this.connect() requests advancing to CONNECTED, if possible,
+ *                and resolves as soon as that state is reached
+ * this.close()   requests advancing to CLOSED, if possible,
+ *                and resolves as soon as that state is reached
+ *
+ * CONNECTING and CLOSING might last a long time, given various
+ * database shenanigans that might be going on.
+ */
+const INITIALIZING = 0
+const INITIALIZED = 1
+const CONNECTING = 2
+const CONNECTED = 3    // emits 'connected' on reaching this state
+const CLOSING = 4
+const CLOSED = 5       // emits 'closed' on reaching this state
+
+function eventOccurs (emitter, event) {
+  return new Promise((resolve, reject) => {
+    emitter.once(event, resolve)
+  })
+}
+
+let viewcount = 0
 
 /**
  *
@@ -30,14 +55,17 @@ const myLockId = 8872355600218495941
  *
  */
 class View {
-  constructor (viewname, spec, opts) {
-    if (!opts) throw ('all three arguments are required')
+  constructor (collection, spec, opts) {
+    this.state = INITIALIZING
+    this.viewid = ++viewcount
+    this.debug = (...a) => debug(...a, '#' + this.viewid)
+    
+    if (!opts) throw Error('all three arguments are required')
 
     if (this.dropTableFirst) {
       throw Error('view.dropTableFirst option has been removed')
     }
-    
-    this.viewname = viewname
+
     this._ee = new EventEmitter()
 
     // I'm slightly dubious about this approach, but it's nicely DRY.
@@ -45,11 +73,11 @@ class View {
 
     // this.filter = canonicalizePropertiesArgument(filter)
 
-    if (!this.tableName) {
+    if (!this.table) {
       // should we perhaps get it from pg_table in spec, instead?
-      this.tableName = viewname
+      this.table = collection
     }
-    
+
     if (!this.pool) {
       this.pool = new pg.Pool({database: this.database})
       this.endPoolOnClose = true
@@ -57,6 +85,7 @@ class View {
 
     if (!this.dispenser) {
       this.dispenser = new IdDispenser({pool: this.pool})
+      this.closeDispenser = true
     }
 
     // For each row we hold in memory, there's a Proxy and its Target
@@ -74,6 +103,11 @@ class View {
     }
     this.newLocalValue = new Map()
 
+    // will hang waiting for connected, which is fine
+    this.startQueryForPriorValues()
+
+    this.dblock = false
+    this.state = INITIALIZED
     // returns syncronously, of course, since it's a constructor
     //
     // on(...) and add(...) will invoke connect() for us and buffer until
@@ -81,9 +115,9 @@ class View {
   }
 
   inspect () {
-    return `view(${this.tableName} rows=${this.proxiesById.size})`
+    return `view(${this.table} rows=${this.proxiesById.size})`
   }
-  
+
   proxyHandlerGet (target, name) {
     // debug('proxy get', target, JSON.stringify(name), typeof name)
 
@@ -124,7 +158,7 @@ class View {
 
   proxyHandlerSet (target, name, value, receiver) {
     // not sure what to do about receiver...
-    debug('set', target, name, value, receiver)
+    this.debug('set', target, name, value, receiver)
     setdefault(this.newLocalValue, target, new Map()).set(name, value)
     // do it on the nextTick so several of these in a row
     // end up as only one UPDATE operation
@@ -162,7 +196,7 @@ class View {
     const targref = '$' + counter++
     vals.push(target.id)
     const setstr = sets.join(', ')
-    const q1 = `UPDATE ${this.tableName} SET ${setstr} WHERE id=${targref}`
+    const q1 = `UPDATE ${this.table} SET ${setstr} WHERE id=${targref}`
     return this.query(q1, vals)
   }
 
@@ -170,7 +204,7 @@ class View {
     if (typeof id === 'object') {
       throw TypeError('view.delete() given an object, not obj.id')
     }
-    const q1 = `DELETE FROM ${this.tableName} WHERE id=$1`
+    const q1 = `DELETE FROM ${this.table} WHERE id=$1`
     return this.query(q1, [id])
   }
 
@@ -192,7 +226,19 @@ class View {
     // Leave the body empty until it comes back from database
     const target = { _newlyThIng: data }
     const proxy = new Proxy(target, this.handler)
+    // addAsync will fill in the id soon, but not yet
+    this.addAsync(data, target, proxy)
+    return proxy
+  }
 
+  /*
+   *
+   * WARNING: what might happen before the id is set, or before the
+   * INSERT is complete?  Like, what if you want to delete it?  Or
+   * set it as the value of some other object?  Neither of those will
+   * work well before having an id, I expect.
+   */
+  async addAsync (data, target, proxy) {
     const props = []
     const dollars = []
     const values = []
@@ -206,116 +252,96 @@ class View {
       values.push(data[key])
     }
 
-    // we return synchronously before we know the id, but we'll
-    // fill it in pretty soon, here.
-    //
-    // WARNING: what might happen before the id is set, or before the
-    // INSERT is complete?   Like, what if you want to delete it?
-    // Or set it as the value of some other object?  Neither of those
-    // will work well before having an id, I expect.
-    this.dispenser.next()
-      .then(id => {
-        debug('id has been assigned', id)
-        target.id = id
-        this.proxiesById.set(id, proxy)
-        debug('PROXIES SET id=', JSON.stringify(id), this.proxiesById)
+    const id = await this.dispenser.next()
+    this.debug('id has been assigned', id)
+    target.id = id
+    this.proxiesById.set(id, proxy)
+    this.debug('PROXIES SET id=', JSON.stringify(id), this.proxiesById)
 
-        // probably not needed, but still, might be nice...
-        debug('USING this.rowEE', this.rowEE)
-        const ee = this.rowEE.get(target)
-        if (ee) {
-          ee.emit('id-assigned', id)
-        } else {
-          debug('no ee to get id-assigned event')
-        }
+    // probably not needed, but still, might be nice...
+    this.debug('USING this.rowEE', this.rowEE)
+    let ee = this.rowEE.get(target)
+    if (ee) {
+      ee.emit('id-assigned', id)
+    } else {
+      this.debug('no ee to get id-assigned event')
+    }
+    
+    props.push('id')
+    dollars.push('$' + counter++)
+    values.push(id)
 
-        props.push('id')
-        dollars.push('$' + counter++)
-        values.push(id)
-      })
-      .then(() => {
-        const f = () => {
-          this.query(`INSERT INTO ${this.tableName} (${props.join(', ')}) 
-                      VALUES (${dollars.join(', ')}) RETURNING *`, values)
-            .then(res => {
-              debug('creation INSERT returned row', res.rows[0])
+    const res = await this.query(
+      `INSERT INTO ${this.table} (${props.join(', ')}) 
+       VALUES (${dollars.join(', ')}) RETURNING *`, values)
+    if (res === undefined) throw Error('view closed before INSERT could run')
+    this.debug('creation INSERT returned row', res.rows[0])
 
-              // Whenever the NOTIFY arrives, which migth be before or
-              // after this point where the INSERT returns, it will
-              // ignore the event because the id is already in proxiesById.
+    // Whenever the NOTIFY arrives, which migth be before or
+    // after this point where the INSERT returns, it will
+    // ignore the event because the id is already in proxiesById.
+    Object.assign(target, res.rows[0])
 
-              Object.assign(target, res.rows[0])
+    // we could look for conflicts and warn someone... Emit
+    // a 'change-refused' event or something.
+    this.newLocalValue.delete(target)
 
-              // we could look for conflicts and warn someone... Emit
-              // a 'change-refused' event or something.
-              this.newLocalValue.delete(target)
-
-              const ee = this.rowEE.get(target)
-              if (ee) {
-                debug('emit change', {}, proxy)
-                ee.emit('change', {}, proxy)
-              }
-
-              debug('emitting appear')
-              this._ee.emit('appear', proxy)
-              this._ee.emit('stable')
-            })
-        }
-
-        if (this.ready) {
-          f()
-        } else {
-          debug('.add but not ready, queued')
-          this.connect()
-          this._ee.on('ready', f)
-        }
-      })
-
-    debug('add returning a proxy')
-    return proxy
+    ee = this.rowEE.get(target)
+    if (ee) {
+      this.debug('emit change', {}, proxy)
+      ee.emit('change', {}, proxy)
+    }
+    this.debug('emitting appear')
+    this._ee.emit('appear', proxy)
+    this._ee.emit('stable')
   }
 
-  close () {
-    // UGH -- this should return a promise,
-    // so we can be fully shut down before
-    // calling t.end() in testing
+  async close () {
+    this.debug('.close() called for ', this.table)
+    if (this.state === CLOSED) {
+      this.debug('was already closed')
+      return
+    }
+    if (this.state === CLOSING) {
+      this.debug('already closing; we shall wait for other thread')
+      await eventOccurs(this._ee, 'closed')
+      this.debug('other thread completed closing, we can now resolve')
+      return
+    }
+
+    this.debug('cant close until fully connected')
+    await this.connect()
+
+    // some day maybe we'll bring back 'this.pleaseClose' as a flag
+    // telling connect() to skip some of its work.  But that got
+    // messy.
 
     // remove triggers/function?   Nah.
-    return new Promise((resolve, reject) => {
-      this.dispenser.close()
-        .then(() => {
-          if (this.ready) {
 
-            if (this.releaseClient) this.releaseClient()
-            
-            this.pleaseClose = true
-            if (this.endPoolOnClose) {
-              debug('calling pool.end')
-              this.pool.end()
-                .then(() => {
-                  debug('pool end resolved')
-                  this._ee.emit('closed')
-                  resolve()
-                })
-            } else {
-              resolve()
-            }
-          } else {
-            // it's too soon in the process, so just set a flag
-            this.pleaseClose = true
-            this._ee.on('closed', resolve)
-          }
-        })
-    })
+    if (this.closeDispenser) {
+      this.dispenser.close()
+    }
+
+    if (this.releaseClient) {
+      this.debug('releasing', this.table)
+      this.releaseClient()
+    }
+
+    if (this.endPoolOnClose) {
+      this.debug('calling pool.end')
+      await this.pool.end()
+      this.debug('pool end resolved')
+    }
+
+    this._ee.emit('closed')
   }
 
   // I like to hide the eventemitter interface, for now at least, to
-  // reduce ... weird things.
+  // keep users to only using on/off, and catch for more errors.
 
   on (eventName, callback) {
     if (eventName in {appear: 1, stable: 1}) {
       this._ee.on(eventName, callback)
-      this.connect()
     } else {
       throw Error('unknown event name: ' + JSON.stringify(eventName))
     }
@@ -325,17 +351,19 @@ class View {
     return this._ee.off(...args)
   }
 
-  query (text, data) {
-    debug('QUERY', text, data)
-    if (this.pleaseClose) {
-      debug('QUERY WHILE CLOSING')
-      return Promise.resolve()
+  async query (text, data) {
+    this.debug('QUERY', text, data)
+    if (this.state >= CLOSING) {
+      this.debug('QUERY WHILE CLOSING')
+      return undefined
     }
-    return this.pool.query(text, data)
+    await this.connect()
+    const res = await this.pool.query(text, data)
+    return res
   }
 
   handleUpdateEvent (newdata) {
-    debug('update on', newdata.id, JSON.stringify(newdata))
+    this.debug('update on', newdata.id, JSON.stringify(newdata))
     const id = newdata.id // in one version we overwrote .id later
     const proxy = this.proxiesById.get(id)
     const target = proxy._targetBehindProxy
@@ -346,8 +374,8 @@ class View {
       old = Object.assign({}, target)
     }
 
-    debug('database update from', target)
-    debug('database update to  ', newdata)
+    this.debug('database update from', target)
+    this.debug('database update to  ', newdata)
 
   // This totally does not work for deep or linked objects...
   //
@@ -364,90 +392,99 @@ class View {
     // we could perhaps be more graceful about this.
     this.newLocalValue.delete(target)
 
-    debug('database update left target as', target)
-    debug('database returning old as     ', old)
+    this.debug('database update left target as', target)
+    this.debug('database returning old as     ', old)
 
     if (ee) {
-      debug('emit change', old, proxy)
+      this.debug('emit change', old, proxy)
       ee.emit('change', old, proxy)
     } else {
-      debug('no event emitter')
+      this.debug('no event emitter')
     }
   }
 
   /**
-   * async: Resolves when we're properly connected
-
-   BROKEN: fix when we actually need it for something
-
-  connected () {
-    if (this.ready) return Promise.resolve()
-    if (this.connecting) return new Promise((resolve, reject) => {
-      this._ee.on('ready', resolve)
-      this._ee.on('error', reject)
-    })
-    return this.connect()
-  }
-  */
-  
-  /**
-   * Start the process of connecting, and poking at the database
-   * however we need. Runs the startup query near the end. Emits
-   * 'ready' event and sets this.ready=true at the point where it's
-   * safe to start doing adds & updates.
-   *
-   * RESOLVES AT A STRANGE TIME.  Resolves immediately if someone else is already working on this; otherwise doesn't resolve until the startup query is done, which is long after we're ready to do stuff.
+   * Start the process of "connecting", which mostly means making sure
+   * the database is set up so we can listen to table changes
    */
   async connect () {
-    if (this.ready) return
-    if (this.connecting) return // only one of us needs to do it
-    this.connecting = true
-
+    this.debug('.connect', this.table)
+    if (this.state === CONNECTING) {
+      // another 'thread' is already doing the work, so just wait for
+      // it to be done
+      this.debug('need to wait, another flow has it')
+      await eventOccurs(this._ee, 'connected')
+      return
+    }
+    if (this.state > CONNECTED) {
+      throw Error('already closing or closed')
+    }
+    this.state = CONNECTING
+    this.debug('.connect CONNECTING', this.table)
+    
     // Pull one client out of the pool.  Use it in a transaction with
     // advisory locking, so we can cleanly set up the table and
     // trigger without interference, then use it for LISTEN, which
     // also needs a private client.
-    
+
     const client = await this.pool.connect()
     this.releaseClient = () => {
       if (client.release) {
         client.release()
-        debug('listen-client .release called')
+        this.debug('listen-client .release called')
       }
     }
 
     try {
-      await client.query('BEGIN')
-      await client.query(`SELECT pg_advisory_xact_lock(${myLockId})`)
-      await this.createTableIfNeeded(client)
+      // not sure why, but we need to make the trigger function before
+      // the transaction; otherwise, it's not visible in the transaction
       await this.createTriggerFunction(client)
+      this.debug('did create trigger function')
+
+      await client.query('BEGIN')
+      this.debug('transaction started, locking')
+      //
+      // for some reason this has stopped working, and now says
+      //
+      //   detail: 'Key (proname, proargtypes, pronamespace)=(live_view_notify, , 2200) already exists.',
+      // duplicate key value violates unique constraint "pg_proc_proname_args_nsp_index"
+      // 
+      // await client.query(`SELECT pg_advisory_xact_lock(${myLockId})`)
+      //
+      //  Maybe we can do a process-wide lock?
+      //
+      await sleep(5000)
+      await processLock()
+      this.debug('got process lock')
+      await sleep(5000)
+      await this.createTableIfNeeded(client)
+      await sleep(5000)
+      this.debug('did table')
+      await sleep(5000)
+      this.debug('did sleep')
       await this.createTrigger(client)
+      this.debug('did trigger')
       await client.query('COMMIT')
+      this.debug('did commit')
     } catch (e) {
       await client.query('ROLLBACK')
       throw e
     } finally {
+      processUnlock()
       // do not "client.release()" because we use it for LISTEN
     }
 
     client.on('notification', msg => this.notification(msg))
-    const sql = `LISTEN ${this.tableName}_notify`
+    const sql = `LISTEN ${this.table}_notify`
     await client.query(sql)
-    debug('listening via', sql)
+    this.debug('listening via', sql)
 
-    this.connecting = false
-    this.ready = true
-    this._ee.emit('ready')
-    if (this.pleaseClose) await this.close()
-
-    await this.startQuery()
-    debug('startup query completed')
-    if (this.pleaseClose) await this.close()
+    this.state = CONNECTED
+    this._ee.emit('connected')
   }
 
-
   notification (msg) {
-    debug('postgres notification received:', msg)
+    this.debug('postgres notification received:', msg)
     const [op, data] = JSON.parse(msg.payload)
     if (op === 'INSERT') {
       this.appear(data)
@@ -488,7 +525,13 @@ class View {
     END;
     $$ LANGUAGE plpgsql;
     `
-    await conn.query(sql)
+    try {
+      this.debug('creating live_view_notify')
+      const res = await conn.query(sql)
+      this.debug('created live_view_notify', res)
+    } catch (e) {
+      this.debug('error in creating function:', e)
+    }
   }
 
   async createTrigger (conn) {
@@ -496,17 +539,17 @@ class View {
      * defined it.  If we didn't have our advisory lock, this would
      * open up a window to missing events in a second view of the same
      * table, BUT that's one of the reasons we do have the advisory
-     * lock.  
+     * lock.
      *
      * Everyone using triggers named *_live_view needs to be using the
      * same advisory lock! */
 
     // do NOT sql-quote the table name.
-    await this.query(`DROP TRIGGER IF EXISTS ${this.tableName}_live_view
-                      ON ${this.tableName} CASCADE`)
+    await this.query(`DROP TRIGGER IF EXISTS ${this.table}_live_view
+                      ON ${this.table} CASCADE`)
 
-    await this.query(`CREATE TRIGGER ${this.tableName}_live_view
-                      AFTER INSERT OR UPDATE OR DELETE ON ${this.tableName}
+    await this.query(`CREATE TRIGGER ${this.table}_live_view
+                      AFTER INSERT OR UPDATE OR DELETE ON ${this.table}
                       FOR EACH ROW EXECUTE PROCEDURE live_view_notify(); `)
 
     /* if we're not going to drop it, then do this:
@@ -524,33 +567,34 @@ class View {
   // In theory we could check to make sure the columns are right, but
   // maybe better to catch that in looking at the results rows anyway.
   async createTableIfNeeded () {
-    if (this.pleaseClose) return
-    debug('createTableIfNeeded', this.createUsingSQL)
+    this.debug('createTableIfNeeded', this.createUsingSQL)
     if (this.createUsingSQL) {
-      debug('trying to create table')
+      this.debug('trying to create table')
       // do NOT sql-quote this, but we SHOULD machine generate it
       await this.query(
-        `CREATE TABLE IF NOT EXISTS ${this.tableName} (
+        `CREATE TABLE IF NOT EXISTS ${this.table} (
            id serial primary key,
            ${this.createUsingSQL}
          )`)
     }
   }
 
-  startQuery () {
-    if (this.pleaseClose) return Promise.resolve()
-    return (
-    this.query(`SELECT * FROM ${this.tableName}`)
-      .then(res => {
-        for (let row of res.rows) {
-          this.appear(row)
-        }
-        this._ee.emit('stable')
-      })
-    )
+  async startQueryForPriorValues () {
+    if (this.state > CONNECTED) return
+    await this.connect()
+    if (this.state > CONNECTED) return
+    const res = await this.query(`SELECT * FROM ${this.table}`)
+    for (let row of res.rows) {
+      this.appear(row)
+    }
+    this._ee.emit('stable')
   }
 
   async lookup (id) {
+    if (this.state >= CLOSING) {
+      throw Error('lookup after close')
+    }
+    await this.connect()
     if (typeof id === 'string') {
       id = parseInt(id)
     }
@@ -558,8 +602,9 @@ class View {
     let proxy = this.proxiesById.get(id)
     // but if not, let's do a separate query, to be sure
     if (!proxy) {
-      debug('LOOKUP NEEDS id=', JSON.stringify(id), proxy, this.proxiesById)
-      const res = await this.query(`SELECT * FROM ${this.tableName} WHERE id = $1`, [id])
+      this.debug('LOOKUP NEEDS id=', JSON.stringify(id), proxy, this.proxiesById)
+      const res = await this.query(
+        `SELECT * FROM ${this.table} WHERE id = $1`, [id])
       if (res.rowCount === 1) {
         const row = res.rows[0]
         proxy = this.appear(row)
@@ -571,7 +616,7 @@ class View {
         throw Error('multiple results from id query, id=' + id)
       }
     }
-    debug('LOOKUP RETURNING FOR ID', id, proxy, this.proxiesById)
+    this.debug('LOOKUP RETURNING FOR ID', id, proxy, this.proxiesById)
     return proxy
   }
 
@@ -580,11 +625,11 @@ class View {
     startQuery () {
     this.pool.connect((err, client, done) => {
     if (err) throw err
-    const q = new QueryStream(`SELECT * FROM ${this.tableName}`)
+    const q = new QueryStream(`SELECT * FROM ${this.table}`)
     const stream = client.query(q)
     //release the client when the stream is finished
     stream.on('end', () => {
-    debug('***query stream ended')
+    this.debug('***query stream ended')
     done();
     client.end()
     })
@@ -596,21 +641,64 @@ class View {
 */
 
   appear (data) {
-    debug('generating APPEAR', data)
+    this.debug('generating APPEAR', data)
     let proxy = this.proxiesById.get(data.id)
-    debug('PROXIES GET ID=', data.id, this.proxiesById, 'PROXY=', proxy)
+    this.debug('PROXIES GET ID=', data.id, this.proxiesById, 'PROXY=', proxy)
     if (!proxy) {
-      debug('new proxy needed for', data.id)
+      this.debug('new proxy needed for', data.id)
       proxy = new Proxy(data, this.handler)
       this.proxiesById.set(data.id, proxy)
-      debug('generating APPEAR on proxy', proxy)
+      this.debug('generating APPEAR on proxy', proxy)
       this._ee.emit('appear', proxy)
       return proxy
     } else {
-      debug('duplicate appear for ' + data.id)
+      this.debug('duplicate appear for ' + data.id)
       return proxy
     }
   }
 }
 
 module.exports = View
+
+
+function sleep (millis) {
+  debug('sleeping', millis)
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      debug('...sleep done')
+      resolve()
+    }, millis)
+  })
+}
+
+
+// simple semaphore, to workaround postgres problem
+
+let locked = false
+const processQueue = []
+
+function processLock () {
+  debug('trying to lock')
+  if (locked) {
+    debug('... on queue')
+    return new Promise((resolve, reject) => {
+      processQueue.push(resolve)
+    })
+  } else {
+    debug('... locked')
+    locked = true
+    return Promise.resolve()
+  }
+}
+
+function processUnlock () {
+  debug('unlocking...')
+  const head = processQueue.shift()
+  if (head) {
+    debug('new lock given to head of queue')
+    head()
+  } else {
+    debug('unlocked')
+    locked = false
+  }
+}

@@ -1,18 +1,44 @@
 'use strict'
 
 const test = require('tape')
-const View = require('.')
+const DB = require('.')
 const debug = require('debug')('testing')
+
+process.on('unhandledRejection', (reason, p) => {
+  console.error(process.argv[1], 'Unhandled Rejection at: Promise', p, 'reason:', reason)
+  process.exit()
+})
+if (!process.env.PGPASSWORD) {
+  console.error('\nno PGPASSWORD in environement\n\n')
+  process.exit(1)
+}
+
+function dbv (sql) {
+  const db = new DB({useTempDB: true})
+  const v = db.view('testing_table_live_view_1', [], { createUsingSQL: `a text` })
+  return [db, v]
+}
+
+
+test.only('start and stop', t => {
+  t.plan(1)
+  const [db, v] = dbv('a text')
+
+  db.close().then(() => {
+    t.ok(true)
+    t.ok(true)
+    t.ok(true)
+    t.end()
+  })
+})
 
 test('simple add and appear', t => {
   t.plan(1)
-  const v = new View('testing_table_live_view_1',
-                     { dropTableFirst: true, createUsingSQL: `a text` })
+  const [db, v] = dbv('a text')
 
   v.on('appear', obj => {
     t.equal(obj.a, 'Hello')
-    v.close()
-    t.end()
+    db.close().then(() => t.end())
   })
 
   v.add({a: 'Hello'})
@@ -20,8 +46,7 @@ test('simple add and appear', t => {
 
 test(t => {
   t.plan(6)
-  const v = new View('testing_table_live_view_1',
-                     { dropTableFirst: true, createUsingSQL: `a text` })
+  const [db, v] = dbv('a text')
 
   v.on('appear', obj => {
     t.equal(obj.a, 'Hello')
@@ -38,8 +63,7 @@ test(t => {
 
     obj.on('disappear', partial => {
       t.equal(partial.id, obj.id)
-      v.close()
-      t.end()
+      db.close().then(() => t.end())
     })
 
     // obj.a = 'Goodbye!'
@@ -51,12 +75,12 @@ test(t => {
 
 test('watch between different views', t => {
   // t.plan(6)
-  const v = new View('testing_table_live_view_1',
-                     { dropTableFirst: true, createUsingSQL: `a text` })
+  const [db, v] = dbv('a text')
+
   v.add({a: 'Hello'})
 
   v._ee.on('ready', () => { // make sure table is created, then
-    const v2 = new View('testing_table_live_view_1')
+    const v2 = db.view({}, {table: 'testing_table_live_view_1'})
     debug('v2', v2)
 
     v2.on('appear', obj => {
@@ -74,14 +98,7 @@ test('watch between different views', t => {
 
       obj.on('disappear', partial => {
         t.equal(partial.id, obj.id)
-        Promise.all([
-          v.close(),
-          v2.close()
-        ]).then(() => {
-          console.log('READY TO CALL t.end()')
-          setTimeout(t.end.bind(t), 300)
-          // t.end()
-        })
+        db.close().then(() => t.end())
       })
 
       // obj.a = 'Goodbye!'
@@ -95,13 +112,14 @@ test('sleep between tests', t => {
 })
 
 test('second view after some adds', t => {
+  debug('9000')
   t.plan(2)
-  const v = new View('testing_table_live_view_1',
-                     { dropTableFirst: true, createUsingSQL: `a text` })
+  const [db, v] = dbv('a text')
+
   v.add({a: 'Hello'})
   v.add({a: 'Hello SECOND'})
     .on('change', () => {
-      const v2 = new View('testing_table_live_view_1')
+      const v2 = db.view({}, {table: 'testing_table_live_view_1'})
 
       let counter = 0
       v2.on('appear', obj => {
@@ -112,18 +130,17 @@ test('second view after some adds', t => {
           t.fail()
         }
         if (counter >= 2) {
-          v.close()
-          v2.close()
-          t.end()
+          debug('closing db')
+          db.close().then(() => t.end())
         }
       })
     })
 })
 
 test('set', t => {
+  debug('9100')
   t.plan(7)
-  const v = new View('testing_table_live_view_1',
-                     { dropTableFirst: true, createUsingSQL: `a text` })
+  const [db, v] = dbv('a text')
 
   v.on('appear', obj => {
     t.equal(obj.a, 'Hello')
@@ -140,8 +157,7 @@ test('set', t => {
 
     obj.on('disappear', partial => {
       t.equal(partial.id, obj.id)
-      v.close()
-      t.end()
+      db.close().then(() => t.end())
     })
 
     obj.a = 'Goodbye!'
@@ -154,9 +170,9 @@ test('set', t => {
 
 test('set with changeNow and delete', t => {
   t.plan(7)
-  const v = new View('testing_table_live_view_1',
-    { dropTableFirst: true,
-      createUsingSQL: `a text`,
+  const db = new DB({useTempDB: true})
+  const v = db.view('testing_table_live_view_1', {},
+    { createUsingSQL: `a text`,
       changeNow: true })
 
   v.on('appear', obj => {
@@ -175,8 +191,7 @@ test('set with changeNow and delete', t => {
 
     obj.on('disappear', partial => {
       t.equal(partial.id, obj.id)
-      v.close()
-      t.end()
+      db.close().then(() => t.end())
     })
 
     obj.a = 'Goodbye!'
@@ -189,14 +204,12 @@ test('set with changeNow and delete', t => {
 
 test('add', t => {
   t.plan(3)
-  const v = new View('testing_table_live_view_1',
-                     { dropTableFirst: true, createUsingSQL: `a text` })
+  const [db, v] = dbv('a text')
 
   v.on('appear', obj => {
     debug('appear', obj)
     t.equal(obj.a, 'Hello')
-    v.close()
-    t.end()
+    db.close().then(() => t.end())
   })
 
   v.add({a: 'Hello'})

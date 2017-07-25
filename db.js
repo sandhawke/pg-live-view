@@ -1,12 +1,12 @@
 'use strict'
 
 const pg = require('pg')
-const debug = require('debug')('View')
+const debug = require('debug')('db')
 const EventEmitter = require('eventemitter3')
-const setdefault = require('./setdefault')
+// const setdefault = require('./setdefault')
 const IdDispenser = require('./pg-id-dispenser')
 const View = require('./view')
-const pgtemp = require('pg-temp-db')
+const pgtemp = require('pg-scratch')
 
 class DB extends EventEmitter {
   constructor (opts) {
@@ -27,14 +27,16 @@ class DB extends EventEmitter {
     if (!this.views) {
       this.views = {}
     }
+    this.anonCounter = 0
   }
 
   view (...args) {
+    debug('.view called', args)
     let name
     if (typeof args[0] === 'string') {
       name = args.shift()
     } else {
-      name = 'anonview' + this.views.length
+      name = 'anonview_' + (++this.anonCounter)
     }
     let spec = args.shift() // run through Normalize
     let optOverride = args.shift()
@@ -45,6 +47,9 @@ class DB extends EventEmitter {
       dispenser: this.dispenser}
     Object.assign(opts, optOverride)
 
+    if (this.views[name]) throw Error('name already in use')
+
+    debug('.view normalized to', [name, spec, opts])
     const v = new View(name, spec, opts)
     this.views[name] = v
 
@@ -52,12 +57,11 @@ class DB extends EventEmitter {
   }
 
   async close () {
-    await Promise.all(this.views.map(v => v.close()))
+    await Promise.all(Object.values(this.views).map(v => v.close()))
     if (this.endPoolOnClose) {
       await this.pool.end()
     }
   }
 }
-
 
 module.exports = DB

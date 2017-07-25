@@ -2,7 +2,7 @@
   "name": "pg-live-view",
   "version": "0.0.1",
   "description": "convenient way to work with simple postgres data",
-  "main": "view.js",
+  "main": "db.js",
   "scripts": {
     "test": "standard && tap --cov test[a-z0-9-_]*.js",
     "coverage": "istanbul cover all-tests.js && firefox coverage/lcov-report/pg-live-view/view.js.html"
