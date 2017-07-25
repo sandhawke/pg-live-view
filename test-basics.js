@@ -20,7 +20,7 @@ function dbv (sql) {
 }
 
 
-test.only('start and stop', t => {
+test('start and stop', t => {
   t.plan(1)
   const [db, v] = dbv('a text')
 
@@ -77,7 +77,7 @@ test('watch between different views', t => {
 
   v.add({a: 'Hello'})
 
-  v._ee.on('ready', () => { // make sure table is created, then
+  v._ee.on('connected', () => { // make sure table is created, then
     const v2 = db.view({}, {table: 'testing_table_live_view_1'})
     debug('v2', v2)
 

@@ -56,7 +56,7 @@ let viewcount = 0
  */
 class View {
   constructor (collection, spec, opts) {
-    this.state = INITIALIZING
+    this.setState(INITIALIZING)
     this.viewid = ++viewcount
     this.debug = (...a) => debug(...a, '#' + this.viewid)
     
@@ -103,7 +103,7 @@ class View {
     }
     this.newLocalValue = new Map()
     this.dblock = false
-    this.state = INITIALIZED
+    this.setState(INITIALIZED)
 
     // will hang waiting for connected, which is fine
     this.startQueryForPriorValues()
@@ -115,6 +115,11 @@ class View {
     return `view(${this.table} rows=${this.proxiesById.size})`
   }
 
+  setState (newState) {
+    debug('state change from', this.state, '===>', newState)
+    this.state = newState
+  }
+  
   proxyHandlerGet (target, name) {
     // debug('proxy get', target, JSON.stringify(name), typeof name)
 
@@ -295,6 +300,10 @@ class View {
 
   async close () {
     this.debug('.close() called for ', this.table)
+    if (this.state < CONNECTED) {
+      this.debug('cant close until fully connected')
+      await this.connect()
+    }
     if (this.state === CLOSED) {
       this.debug('was already closed')
       return
@@ -305,9 +314,7 @@ class View {
       this.debug('other thread completed closing, we can now resolve')
       return
     }
-
-    this.debug('cant close until fully connected')
-    await this.connect()
+    this.setState(CLOSING)
 
     // some day maybe we'll bring back 'this.pleaseClose' as a flag
     // telling connect() to skip some of its work.  But that got
@@ -330,6 +337,7 @@ class View {
       this.debug('pool end resolved')
     }
 
+    this.setState(CLOSED)
     this._ee.emit('closed')
   }
 
@@ -406,6 +414,7 @@ class View {
    */
   async connect () {
     this.debug('.connect', this.table, 'state=', this.state)
+    if (this.state === CONNECTED) return
     if (this.state === CONNECTING) {
       // another 'thread' is already doing the work, so just wait for
       // it to be done
@@ -416,7 +425,7 @@ class View {
     if (this.state > CONNECTED) {
       throw Error('already closing or closed')
     }
-    this.state = CONNECTING
+    this.setState(CONNECTING)
     this.debug('.connect CONNECTING', this.table, 'state=', this.state)
     
     // Pull one client out of the pool.  Use it in a transaction with
@@ -435,8 +444,8 @@ class View {
     try {
       // not sure why, but we need to make the trigger function before
       // the transaction; otherwise, it's not visible in the transaction
-      await this.createTriggerFunction(client)
-      this.debug('did create trigger function')
+      //
+      //  BUT this is what we wanted the lock for!!!!
 
       await client.query('BEGIN')
       this.debug('transaction started, locking')
@@ -446,13 +455,19 @@ class View {
       //   detail: 'Key (proname, proargtypes, pronamespace)=(live_view_notify, , 2200) already exists.',
       // duplicate key value violates unique constraint "pg_proc_proname_args_nsp_index"
       // 
-      // await client.query(`SELECT pg_advisory_xact_lock(${myLockId})`)
+      await client.query(`SELECT pg_advisory_xact_lock(${myLockId})`)
+      this.debug('got lock')
+
+      await this.createTriggerFunction(client)
+      this.debug('did create trigger function')
+
+
       //
       //  Maybe we can do a process-wide lock?
       //
       // await sleep(5000)
-      await processLock()
-      this.debug('got process lock')
+      // await processLock()
+      // this.debug('got process lock')
       // await sleep(5000)
       await this.createTableIfNeeded(client)
       // await sleep(5000)
@@ -467,7 +482,7 @@ class View {
       await client.query('ROLLBACK')
       throw e
     } finally {
-      processUnlock()
+      // processUnlock()
       // do not "client.release()" because we use it for LISTEN
     }
 
@@ -477,7 +492,7 @@ class View {
     this.debug('listening via', sql)
 
     if (this.state !== CONNECTING) throw Error('internal error')
-    this.state = CONNECTED
+    this.setState(CONNECTED)
     this._ee.emit('connected')
   }
 
@@ -488,13 +503,17 @@ class View {
       this.appear(data)
     } else if (op === 'DELETE') {
       const proxy = this.proxiesById.get(data.id)
-      const target = proxy._targetBehindProxy
-      const ee = this.rowEE.get(target)
-      if (ee) {
-        ee.emit('disappear', data)
+      if (proxy) {
+        const target = proxy._targetBehindProxy
+        const ee = this.rowEE.get(target)
+        if (ee) {
+          ee.emit('disappear', data)
+        }
+        this.rowEE.delete(target)
+        this.proxiesById.delete(data.id)
+      } else {
+        console.error('DELETE for unknown id', data.id)
       }
-      this.rowEE.delete(target)
-      this.proxiesById.delete(data.id)
     } else if (op === 'UPDATE') {
       this.handleUpdateEvent(data)
     } else {
@@ -526,7 +545,7 @@ class View {
     try {
       this.debug('creating live_view_notify')
       const res = await conn.query(sql)
-      this.debug('created live_view_notify', res)
+      this.debug('created live_view_notify')
     } catch (e) {
       this.debug('error in creating function:', e)
     }
