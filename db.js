@@ -25,9 +25,13 @@ class DB extends EventEmitter {
       this.dispenser = new IdDispenser({pool: this.pool})
     }
     if (!this.views) {
-      this.views = {}
+      this.views = new Set()
     }
     this.anonCounter = 0
+  }
+
+  static scratch () {
+    return new DB({useTempDB: true})
   }
 
   view (...args) {
@@ -47,17 +51,23 @@ class DB extends EventEmitter {
       dispenser: this.dispenser}
     Object.assign(opts, optOverride)
 
-    if (this.views[name]) throw Error('name already in use')
+    // TEMP HACK until we're doing spec right
+    if (typeof spec === 'string') {
+      opts.createUsingSQL = spec
+    }
 
     debug('.view normalized to', [name, spec, opts])
     const v = new View(name, spec, opts)
-    this.views[name] = v
+    this.views.add(v)
+    debug('views now', this.views)
 
     return v
   }
 
   async close () {
-    await Promise.all(Object.values(this.views).map(v => v.close()))
+    for (let v of this.views.values()) {
+      await v.close()
+    }
     if (this.endPoolOnClose) {
       await this.pool.end()
     }

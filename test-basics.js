@@ -267,4 +267,3 @@ test('lookup not found', t => {
       db.close().then(() => t.end())
     })
 })
-
