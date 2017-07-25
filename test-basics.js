@@ -26,8 +26,6 @@ test.only('start and stop', t => {
 
   db.close().then(() => {
     t.ok(true)
-    t.ok(true)
-    t.ok(true)
     t.end()
   })
 })

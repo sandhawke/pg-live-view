@@ -102,16 +102,13 @@ class View {
       set: this.proxyHandlerSet.bind(this)
     }
     this.newLocalValue = new Map()
+    this.dblock = false
+    this.state = INITIALIZED
 
     // will hang waiting for connected, which is fine
     this.startQueryForPriorValues()
 
-    this.dblock = false
-    this.state = INITIALIZED
     // returns syncronously, of course, since it's a constructor
-    //
-    // on(...) and add(...) will invoke connect() for us and buffer until
-    // it's ready.
   }
 
   inspect () {
@@ -408,7 +405,7 @@ class View {
    * the database is set up so we can listen to table changes
    */
   async connect () {
-    this.debug('.connect', this.table)
+    this.debug('.connect', this.table, 'state=', this.state)
     if (this.state === CONNECTING) {
       // another 'thread' is already doing the work, so just wait for
       // it to be done
@@ -420,7 +417,7 @@ class View {
       throw Error('already closing or closed')
     }
     this.state = CONNECTING
-    this.debug('.connect CONNECTING', this.table)
+    this.debug('.connect CONNECTING', this.table, 'state=', this.state)
     
     // Pull one client out of the pool.  Use it in a transaction with
     // advisory locking, so we can cleanly set up the table and
@@ -453,15 +450,15 @@ class View {
       //
       //  Maybe we can do a process-wide lock?
       //
-      await sleep(5000)
+      // await sleep(5000)
       await processLock()
       this.debug('got process lock')
-      await sleep(5000)
+      // await sleep(5000)
       await this.createTableIfNeeded(client)
-      await sleep(5000)
+      // await sleep(5000)
       this.debug('did table')
-      await sleep(5000)
-      this.debug('did sleep')
+      // await sleep(5000)
+      // this.debug('did sleep')
       await this.createTrigger(client)
       this.debug('did trigger')
       await client.query('COMMIT')
@@ -479,6 +476,7 @@ class View {
     await client.query(sql)
     this.debug('listening via', sql)
 
+    if (this.state !== CONNECTING) throw Error('internal error')
     this.state = CONNECTED
     this._ee.emit('connected')
   }
@@ -534,6 +532,21 @@ class View {
     }
   }
 
+  // In theory we could check to make sure the columns are right, but
+  // maybe better to catch that in looking at the results rows anyway.
+  async createTableIfNeeded (conn) {
+    this.debug('createTableIfNeeded', this.createUsingSQL)
+    if (this.createUsingSQL) {
+      this.debug('trying to create table')
+      // do NOT sql-quote this, but we SHOULD machine generate it
+      await conn.query(
+        `CREATE TABLE IF NOT EXISTS ${this.table} (
+           id serial primary key,
+           ${this.createUsingSQL}
+         )`)
+    }
+  }
+
   async createTrigger (conn) {
     /* Actually, let's drop it first, just in case we changed how we
      * defined it.  If we didn't have our advisory lock, this would
@@ -545,10 +558,10 @@ class View {
      * same advisory lock! */
 
     // do NOT sql-quote the table name.
-    await this.query(`DROP TRIGGER IF EXISTS ${this.table}_live_view
+    await conn.query(`DROP TRIGGER IF EXISTS ${this.table}_live_view
                       ON ${this.table} CASCADE`)
 
-    await this.query(`CREATE TRIGGER ${this.table}_live_view
+    await conn.query(`CREATE TRIGGER ${this.table}_live_view
                       AFTER INSERT OR UPDATE OR DELETE ON ${this.table}
                       FOR EACH ROW EXECUTE PROCEDURE live_view_notify(); `)
 
@@ -564,30 +577,14 @@ class View {
       */
   }
 
-  // In theory we could check to make sure the columns are right, but
-  // maybe better to catch that in looking at the results rows anyway.
-  async createTableIfNeeded () {
-    this.debug('createTableIfNeeded', this.createUsingSQL)
-    if (this.createUsingSQL) {
-      this.debug('trying to create table')
-      // do NOT sql-quote this, but we SHOULD machine generate it
-      await this.query(
-        `CREATE TABLE IF NOT EXISTS ${this.table} (
-           id serial primary key,
-           ${this.createUsingSQL}
-         )`)
-    }
-  }
-
   async startQueryForPriorValues () {
-    if (this.state > CONNECTED) return
-    await this.connect()
-    if (this.state > CONNECTED) return
     const res = await this.query(`SELECT * FROM ${this.table}`)
-    for (let row of res.rows) {
-      this.appear(row)
+    if (res) {
+      for (let row of res.rows) {
+        this.appear(row)
+      }
+      this._ee.emit('stable')
     }
-    this._ee.emit('stable')
   }
 
   async lookup (id) {
