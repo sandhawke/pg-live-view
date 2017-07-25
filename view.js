@@ -264,7 +264,7 @@ class View {
     this.debug('USING this.rowEE', this.rowEE)
     let ee = this.rowEE.get(target)
     if (ee) {
-      ee.emit('id-assigned', id)
+      if (this.state < CLOSING) ee.emit('id-assigned', id)
     } else {
       this.debug('no ee to get id-assigned event')
     }
@@ -291,11 +291,11 @@ class View {
     ee = this.rowEE.get(target)
     if (ee) {
       this.debug('emit change', {}, proxy)
-      ee.emit('change', {}, proxy)
+      if (this.state < CLOSING) ee.emit('change', {}, proxy)
     }
     this.debug('emitting appear')
-    this._ee.emit('appear', proxy)
-    this._ee.emit('stable')
+    if (this.state < CLOSING) this._ee.emit('appear', proxy)
+    if (this.state < CLOSING) this._ee.emit('stable')
   }
 
   async close () {
@@ -402,7 +402,7 @@ class View {
 
     if (ee) {
       this.debug('emit change', old, proxy)
-      ee.emit('change', old, proxy)
+      if (this.state < CLOSING) ee.emit('change', old, proxy)
     } else {
       this.debug('no event emitter')
     }
@@ -506,7 +506,7 @@ class View {
         const target = proxy._targetBehindProxy
         const ee = this.rowEE.get(target)
         if (ee) {
-          ee.emit('disappear', data)
+          if (this.state < CLOSING) ee.emit('disappear', data)
         }
         this.rowEE.delete(target)
         this.proxiesById.delete(data.id)
@@ -520,7 +520,7 @@ class View {
     }
     // alas, we don't have a way to cluster a bunch of inserts, so
     // we need to do this after each one:
-    this._ee.emit('stable')
+    if (this.state < CLOSING) this._ee.emit('stable')
   }
 
   async createTriggerFunction (conn) {
@@ -601,7 +601,7 @@ class View {
       for (let row of res.rows) {
         this.appear(row)
       }
-      this._ee.emit('stable')
+      if (this.state < CLOSING) this._ee.emit('stable')
     }
   }
 
@@ -664,7 +664,7 @@ class View {
       proxy = new Proxy(data, this.handler)
       this.proxiesById.set(data.id, proxy)
       this.debug('generating APPEAR on proxy', proxy)
-      this._ee.emit('appear', proxy)
+      if (this.state < CLOSING) this._ee.emit('appear', proxy)
       return proxy
     } else {
       this.debug('duplicate appear for ' + data.id)
