@@ -19,10 +19,9 @@ function dbv (sql) {
   return [db, v]
 }
 
-
 test('start and stop', t => {
   t.plan(1)
-  const [db, v] = dbv('a text')
+  const [db] = dbv('a text')
 
   db.close().then(() => {
     t.ok(true)
@@ -220,3 +219,52 @@ test('add', t => {
       debug('changed', before, after)
     })
 })
+
+test('lookup something in mem', t => {
+  t.plan(2)
+  const [db, v] = dbv('a text')
+
+  v.on('appear', obj => {
+    debug('appear', obj)
+    t.equal(obj.a, 'Hello')
+
+    v.lookup(obj.id)
+      .then(obj2 => {
+        t.equal(obj, obj2)
+        db.close().then(() => t.end())
+      })
+  })
+  v.add({a: 'Hello'})
+})
+
+test('lookup non in mem', t => {
+  t.plan(3)
+  const [db, v] = dbv('a text')
+
+  v.on('appear', obj => {
+    const v2 = db.view({}, {table: 'testing_table_live_view_1'})
+    debug('v2', v2)
+
+    v2.lookup(obj.id)
+      .then(obj2 => {
+        t.notEqual(obj, obj2)  // different views, different copies
+        t.equal(obj.id, obj2.id)
+        t.equal(obj.a, obj2.a)
+        db.close().then(() => t.end())
+      })
+  })
+
+  v.add({a: 'Hello'})
+})
+
+test('lookup not found', t => {
+  t.plan(1)
+  const [db, v] = dbv('a text')
+
+  v.lookup(10000)
+    .then(obj => {
+      t.equal(obj, undefined)
+      db.close().then(() => t.end())
+    })
+})
+

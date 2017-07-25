@@ -59,7 +59,7 @@ class View {
     this.setState(INITIALIZING)
     this.viewid = ++viewcount
     this.debug = (...a) => debug(...a, '#' + this.viewid)
-    
+
     if (!opts) throw Error('all three arguments are required')
 
     if (this.dropTableFirst) {
@@ -119,7 +119,7 @@ class View {
     debug('state change from', this.state, '===>', newState)
     this.state = newState
   }
-  
+
   proxyHandlerGet (target, name) {
     // debug('proxy get', target, JSON.stringify(name), typeof name)
 
@@ -268,7 +268,7 @@ class View {
     } else {
       this.debug('no ee to get id-assigned event')
     }
-    
+
     props.push('id')
     dollars.push('$' + counter++)
     values.push(id)
@@ -427,7 +427,7 @@ class View {
     }
     this.setState(CONNECTING)
     this.debug('.connect CONNECTING', this.table, 'state=', this.state)
-    
+
     // Pull one client out of the pool.  Use it in a transaction with
     // advisory locking, so we can cleanly set up the table and
     // trigger without interference, then use it for LISTEN, which
@@ -454,13 +454,12 @@ class View {
       //
       //   detail: 'Key (proname, proargtypes, pronamespace)=(live_view_notify, , 2200) already exists.',
       // duplicate key value violates unique constraint "pg_proc_proname_args_nsp_index"
-      // 
+      //
       await client.query(`SELECT pg_advisory_xact_lock(${myLockId})`)
       this.debug('got lock')
 
       await this.createTriggerFunction(client)
       this.debug('did create trigger function')
-
 
       //
       //  Maybe we can do a process-wide lock?
@@ -544,7 +543,7 @@ class View {
     `
     try {
       this.debug('creating live_view_notify')
-      const res = await conn.query(sql)
+      await conn.query(sql)
       this.debug('created live_view_notify')
     } catch (e) {
       this.debug('error in creating function:', e)
@@ -676,6 +675,9 @@ class View {
 
 module.exports = View
 
+/*
+
+These were used for some debugging...
 
 function sleep (millis) {
   debug('sleeping', millis)
@@ -686,7 +688,6 @@ function sleep (millis) {
     }, millis)
   })
 }
-
 
 // simple semaphore, to workaround postgres problem
 
@@ -718,3 +719,5 @@ function processUnlock () {
     locked = false
   }
 }
+
+*/
