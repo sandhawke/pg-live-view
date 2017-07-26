@@ -12,7 +12,8 @@ const IdDispenser = require('./pg-id-dispenser')
 
 // This is a random number I generated; it must be different from
 // what any other software is using, if it's also got postgres
-// clients connecting to this server.
+// clients connecting to this server.  Anyone touch the same tables
+// and triggers must use this lock around trigger function creation.
 // See https://stackoverflow.com/questions/40525684/tuple-concurrently-updated-when-creating-functions-in-postgresql-pl-pgsql
 
 const myLockId = 8872355600218495943
@@ -29,7 +30,7 @@ const myLockId = 8872355600218495943
  * database shenanigans that might be going on.
  */
 const INITIALIZING = 0
-const INITIALIZED = 1
+const INITIALIZED = 1  // here, when returning from constructor
 const CONNECTING = 2
 const CONNECTED = 3    // emits 'connected' on reaching this state
 const CLOSING = 4
@@ -103,10 +104,8 @@ class View {
     }
     this.newLocalValue = new Map()
     this.dblock = false
-    this.setState(INITIALIZED)
 
-    // will hang waiting for connected, which is fine
-    this.startQueryForPriorValues()
+    this.setState(INITIALIZED)
 
     // returns syncronously, of course, since it's a constructor
   }
@@ -117,6 +116,10 @@ class View {
 
   setState (newState) {
     debug('state change from', this.state, '===>', newState)
+    if (newState <= this.state) {
+      throw Error('internal error, invalid state transition: ' + this.state +
+                  ' ==> ' + newState)
+    }
     this.state = newState
   }
 
@@ -347,6 +350,10 @@ class View {
   on (eventName, callback) {
     if (eventName in {appear: 1, stable: 1}) {
       this._ee.on(eventName, callback)
+      this.connect()
+        .then(() => {
+          this.startQueryForPriorValues() // ignore returned promie
+        })
     } else {
       throw Error('unknown event name: ' + JSON.stringify(eventName))
     }
@@ -409,22 +416,32 @@ class View {
   }
 
   /**
-   * Start the process of "connecting", which mostly means making sure
-   * the database is set up so we can listen to table changes
+   * Resolves when connected, like connect, but doesn't try to make
+   * the connection happen.  Passive.
    */
-  async connect () {
-    this.debug('.connect', this.table, 'state=', this.state)
+  async connected () {
     if (this.state === CONNECTED) return
-    if (this.state === CONNECTING) {
-      // another 'thread' is already doing the work, so just wait for
-      // it to be done
-      this.debug('need to wait, another flow has it')
+    if (this.state <= CONNECTING) {
+      this.debug('waiting to be connected')
       await eventOccurs(this._ee, 'connected')
       return
     }
     if (this.state > CONNECTED) {
       throw Error('already closing or closed')
     }
+  }
+
+  /**
+   * Start the process of "connecting", which mostly means making sure
+   * the database is set up so we can listen to table changes
+   */
+  async connect () {
+    this.debug('.connect', this.table, 'state=', this.state)
+    if (this.state >= CONNECTING) {
+      await this.connected()
+      return
+    }
+    if (this.state !== INITIALIZED) throw Error('internal error')
     this.setState(CONNECTING)
     this.debug('.connect CONNECTING', this.table, 'state=', this.state)
 
@@ -596,7 +613,14 @@ class View {
   }
 
   async startQueryForPriorValues () {
-    const res = await this.query(`SELECT * FROM ${this.table}`)
+    if (this.state !== CONNECTED) throw Error('internal error')
+
+    // only run once
+    if (this.startedQuery) return
+    this.startedQuery = true
+
+    // don't use this.query because we don't want this to invoke connect()
+    const res = await this.pool.query(`SELECT * FROM ${this.table}`)
     if (res) {
       for (let row of res.rows) {
         this.appear(row)

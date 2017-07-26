@@ -267,3 +267,25 @@ test('lookup not found', t => {
       db.close().then(() => t.end())
     })
 })
+
+test('wont miss init results', async (t) => {
+  t.plan(1)
+  const [db, v] = dbv('a text')
+  v.add({a: 'Hello'})
+
+  sleep(200)
+  v.on('appear', obj => {
+    t.equal(obj.a, 'Hello')
+    db.close().then(() => t.end())
+  })
+})
+
+function sleep (millis) {
+  debug('sleeping', millis)
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      debug('...sleep done')
+      resolve()
+    }, millis)
+  })
+}
