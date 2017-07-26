@@ -44,39 +44,43 @@ function eventOccurs (emitter, event) {
 
 let viewcount = 0
 
-/**
- *
- * Options:
- *   pool: a pg connection pool, if you want us to use yours
- *   database: a pg database id, otherwise we'll use the environment
- *   createUsingSQL: create table if missing, using these columns
- *                   (we'll supply the id column)
- *   changeNow: if truthy, then x.p=v ; x.p will show v, even before
- *              it's been confirmed as in the database
- *
- */
+const allowedOptions = {
+  name: 'a reference name for this view, needed for ref',
+  table: 'sql table to use, if any (defaults to same as name)',
+  pool: 'a pg connection pool, if you want us to use yours',
+  dispenser: 'tool for creating new unique ids',
+  database: `a pg database id, otherwise we'll use the environment`,
+  changeNow: `if truthy, then x.p=v ; x.p will show v, even before
+              it's been confirmed as in the database`,
+  createUsingSQL: `create table if missing, using these columns
+                   (we'll supply the id column)`
+}
+
 class View {
-  constructor (collection, spec, opts) {
-    this.setState(INITIALIZING)
-    this.viewid = ++viewcount
+  constructor (opts) {
+    Object.keys(opts).forEach(key => {
+      if (!allowedOptions[key]) throw Error('unknown option: ' + key)
+    })
+    Object.assign(this, opts)
+
+    if (!this.viewid) {
+      this.viewid = ++viewcount
+    }
     this.debug = (...a) => debug(...a, '#' + this.viewid)
 
-    if (!opts) throw Error('all three arguments are required')
+    this.setState(INITIALIZING)
+
+    // instead of extending, to give us a little more control
+    this._ee = new EventEmitter()
 
     if (this.dropTableFirst) {
       throw Error('view.dropTableFirst option has been removed')
     }
 
-    this._ee = new EventEmitter()
-
-    // I'm slightly dubious about this approach, but it's nicely DRY.
-    Object.assign(this, opts)
-
     // this.filter = canonicalizePropertiesArgument(filter)
 
     if (!this.table) {
-      // should we perhaps get it from pg_table in spec, instead?
-      this.table = collection
+      this.table = this.name
     }
 
     if (!this.pool) {
@@ -347,6 +351,8 @@ class View {
   // I like to hide the eventemitter interface, for now at least, to
   // keep users to only using on/off, and catch for more errors.
 
+  // we might want onWithReplay and/or onWithoutReplay to control whether
+  // you see old stuff
   on (eventName, callback) {
     if (eventName in {appear: 1, stable: 1}) {
       this._ee.on(eventName, callback)

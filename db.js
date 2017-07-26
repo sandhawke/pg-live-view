@@ -25,7 +25,7 @@ class DB extends EventEmitter {
       this.dispenser = new IdDispenser({pool: this.pool})
     }
     if (!this.views) {
-      this.views = new Set()
+      this.views = {}
     }
     this.anonCounter = 0
   }
@@ -34,40 +34,41 @@ class DB extends EventEmitter {
     return new DB({useTempDB: true})
   }
 
-  view (...args) {
-    debug('.view called', args)
-    let name
-    if (typeof args[0] === 'string') {
-      name = args.shift()
-    } else {
-      name = 'anonview_' + (++this.anonCounter)
+  view (arg) {
+    debug('.view called', arg)
+    if (!arg.name) {
+      arg.name = 'anonview_' + (++this.anonCounter)
     }
-    let spec = args.shift() // run through Normalize
-    let optOverride = args.shift()
 
     const opts = {
-      db: this,
+      // db: this,    not needed these days
       pool: this.pool,
       dispenser: this.dispenser}
-    Object.assign(opts, optOverride)
+    Object.assign(opts, arg)
 
     // TEMP HACK until we're doing spec right
-    if (typeof spec === 'string') {
-      opts.createUsingSQL = spec
+    if (typeof this.spec === 'string') {
+      opts.createUsingSQL = this.spec
     }
 
-    debug('.view normalized to', [name, spec, opts])
-    const v = new View(name, spec, opts)
-    this.views.add(v)
+    debug('.view normalized to', opts)
+    const v = new View(opts)
+    if (this.views[v.name]) {
+      throw Error('view name duplication: ' + JSON.stringify(v.name))
+    }
+    this.views[v.name] = v
     debug('views now', this.views)
 
     return v
   }
 
   async close () {
-    for (let v of this.views.values()) {
+    await Promise.all(Object.values(this.views).map(v => v.close()))
+    /*
+    for (let v of Object.values(this.views)) {
       await v.close()
     }
+    */
     if (this.endPoolOnClose) {
       await this.pool.end()
     }

@@ -15,7 +15,8 @@ if (!process.env.PGPASSWORD) {
 
 function dbv (sql) {
   const db = new DB({useTempDB: true})
-  const v = db.view('testing_table_live_view_1', [], { createUsingSQL: `a text` })
+  const v = db.view({name: 'testing_table_live_view_1',
+    createUsingSQL: `a text` })
   return [db, v]
 }
 
@@ -77,7 +78,7 @@ test('watch between different views', t => {
   v.add({a: 'Hello'})
 
   v._ee.on('connected', () => { // make sure table is created, then
-    const v2 = db.view({}, {table: 'testing_table_live_view_1'})
+    const v2 = db.view({table: 'testing_table_live_view_1'})
     debug('v2', v2)
 
     v2.on('appear', obj => {
@@ -116,7 +117,7 @@ test('second view after some adds', t => {
   v.add({a: 'Hello'})
   v.add({a: 'Hello SECOND'})
     .on('change', () => {
-      const v2 = db.view({}, {table: 'testing_table_live_view_1'})
+      const v2 = db.view({table: 'testing_table_live_view_1'})
 
       let counter = 0
       v2.on('appear', obj => {
@@ -168,9 +169,9 @@ test('set', t => {
 test('set with changeNow and delete', t => {
   t.plan(7)
   const db = new DB({useTempDB: true})
-  const v = db.view('testing_table_live_view_1', {},
-    { createUsingSQL: `a text`,
-      changeNow: true })
+  const v = db.view({table: 'testing_table_live_view_1',
+    createUsingSQL: `a text`,
+    changeNow: true })
 
   v.on('appear', obj => {
     t.equal(obj.a, 'Hello')
@@ -242,7 +243,7 @@ test('lookup non in mem', t => {
   const [db, v] = dbv('a text')
 
   v.on('appear', obj => {
-    const v2 = db.view({}, {table: 'testing_table_live_view_1'})
+    const v2 = db.view({table: 'testing_table_live_view_1'})
     debug('v2', v2)
 
     v2.lookup(obj.id)
