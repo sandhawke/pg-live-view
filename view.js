@@ -5,6 +5,7 @@ const debug = require('debug')('View')
 const EventEmitter = require('eventemitter3')
 const setdefault = require('setdefault')
 const IdDispenser = require('./pg-id-dispenser')
+const filter = require('./filter')
 
 // const canonicalizePropertiesArgument = require('./props-arg')
 // const SQL = require('sql-template-strings')
@@ -52,8 +53,10 @@ const allowedOptions = {
   database: `a pg database id, otherwise we'll use the environment`,
   changeNow: `if truthy, then x.p=v ; x.p will show v, even before
               it's been confirmed as in the database`,
+  createIfMissing: `use the filter to figure out what table we need`,
   createUsingSQL: `create table if missing, using these columns
-                   (we'll supply the id column)`
+                   (we'll supply the id column)`,
+  filter: `expression describing columns and allowed values`
 }
 
 class View {
@@ -77,7 +80,13 @@ class View {
       throw Error('view.dropTableFirst option has been removed')
     }
 
-    // this.filter = canonicalizePropertiesArgument(filter)
+    if (!this.filterList && this.filter) {
+      this.filterList = filter.toList(this.filter)
+    }
+
+    if (!this.createUsingSQL && this.createIfMissing && this.filterList) {
+      this.createUsingSQL = filter.toSQLCreate(this.filterList)
+    }
 
     if (!this.table) {
       this.table = this.name

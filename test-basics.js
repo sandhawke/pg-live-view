@@ -15,8 +15,13 @@ if (!process.env.PGPASSWORD) {
 
 function dbv (sql) {
   const db = new DB({useTempDB: true})
-  const v = db.view({name: 'testing_table_live_view_1',
-    createUsingSQL: `a text` })
+  const v = db.view({
+    name: 'table_1',
+    filter: {
+      a: {type: 'string'}
+    },
+    createIfMissing: true
+  })
   return [db, v]
 }
 
@@ -56,7 +61,7 @@ test(t => {
       t.equal(to.a, 'Goodbye!')
 
       // obj.delete()
-      v.query('DELETE FROM testing_table_live_view_1')
+      v.query('DELETE FROM table_1')
     })
 
     obj.on('disappear', partial => {
@@ -65,7 +70,7 @@ test(t => {
     })
 
     // obj.a = 'Goodbye!'
-    v.query("UPDATE testing_table_live_view_1 SET a='Goodbye!'")
+    v.query("UPDATE table_1 SET a='Goodbye!'")
   })
 
   v.add({a: 'Hello'})
@@ -78,7 +83,7 @@ test('watch between different views', t => {
   v.add({a: 'Hello'})
 
   v._ee.on('connected', () => { // make sure table is created, then
-    const v2 = db.view({table: 'testing_table_live_view_1'})
+    const v2 = db.view({table: 'table_1'})
     debug('v2', v2)
 
     v2.on('appear', obj => {
@@ -91,7 +96,7 @@ test('watch between different views', t => {
         t.equal(to.a, 'Goodbye!')
 
         // obj.delete()
-        v.query('DELETE FROM testing_table_live_view_1')
+        v.query('DELETE FROM table_1')
       })
 
       obj.on('disappear', partial => {
@@ -100,7 +105,7 @@ test('watch between different views', t => {
       })
 
       // obj.a = 'Goodbye!'
-      v.query("UPDATE testing_table_live_view_1 SET a='Goodbye!'")
+      v.query("UPDATE table_1 SET a='Goodbye!'")
     })
   })
 })
@@ -117,7 +122,7 @@ test('second view after some adds', t => {
   v.add({a: 'Hello'})
   v.add({a: 'Hello SECOND'})
     .on('change', () => {
-      const v2 = db.view({table: 'testing_table_live_view_1'})
+      const v2 = db.view({table: 'table_1'})
 
       let counter = 0
       v2.on('appear', obj => {
@@ -150,7 +155,7 @@ test('set', t => {
       t.equal(to.a, 'Goodbye!')
 
       // obj.delete()
-      v.query('DELETE FROM testing_table_live_view_1')
+      v.query('DELETE FROM table_1')
     })
 
     obj.on('disappear', partial => {
@@ -160,7 +165,7 @@ test('set', t => {
 
     obj.a = 'Goodbye!'
     t.equal(obj.a, 'Hello')  // still
-    // v.query("UPDATE testing_table_live_view_1 SET a='Goodbye!'")
+    // v.query("UPDATE table_1 SET a='Goodbye!'")
   })
 
   v.add({a: 'Hello'})
@@ -169,7 +174,7 @@ test('set', t => {
 test('set with changeNow and delete', t => {
   t.plan(7)
   const db = new DB({useTempDB: true})
-  const v = db.view({table: 'testing_table_live_view_1',
+  const v = db.view({table: 'table_1',
     createUsingSQL: `a text`,
     changeNow: true })
 
@@ -184,7 +189,7 @@ test('set with changeNow and delete', t => {
 
       // obj.delete()
       v.delete(obj.id)
-      // v.query('DELETE FROM testing_table_live_view_1')
+      // v.query('DELETE FROM table_1')
     })
 
     obj.on('disappear', partial => {
@@ -194,7 +199,7 @@ test('set with changeNow and delete', t => {
 
     obj.a = 'Goodbye!'
     t.equal(obj.a, 'Goodbye!')  // because of changeNow
-    // v.query("UPDATE testing_table_live_view_1 SET a='Goodbye!'")
+    // v.query("UPDATE table_1 SET a='Goodbye!'")
   })
 
   v.add({a: 'Hello'})
@@ -243,7 +248,7 @@ test('lookup non in mem', t => {
   const [db, v] = dbv('a text')
 
   v.on('appear', obj => {
-    const v2 = db.view({table: 'testing_table_live_view_1'})
+    const v2 = db.view({table: 'table_1'})
     debug('v2', v2)
 
     v2.lookup(obj.id)
