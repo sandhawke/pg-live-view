@@ -5,7 +5,7 @@ A convenient way to use postgres data from JavaScript.
 Example assumes you've set up postgres and the right environment
 variables, and a suitable table called my_dogs.
 
-'''OBSOLETE INTERFACE; SEE TESTS'''
+**OBSOLETE INTERFACE; SEE TESTS**
 
 ```js
 const pgView = require('pg-live-view')
