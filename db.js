@@ -51,7 +51,7 @@ class DB extends EventEmitter {
       opts.createUsingSQL = this.spec
     }
 
-    debug('.view normalized to', opts)
+    // debug('.view normalized to', opts)
     const v = new View(opts)
     if (this.views[v.name]) {
       throw Error('view name duplication: ' + JSON.stringify(v.name))

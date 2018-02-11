@@ -33,9 +33,12 @@ function toList (filter) {
     /* } else if (val.lessthan) {
 
      */
+    } else if (val === true) {
+      out.push({op: 'type', property: key, type: 'boolean'})
+      out.push({op: 'eq', property: key, type: true})
     } else {
-      throw Error('unknown filter value for ' + JSON.string(key) +
-                  ' => ' + JSON.string(val))
+      throw Error('unknown filter value for ' + JSON.stringify(key) +
+                  ' => ' + JSON.stringify(val))
     }
   }
 
@@ -49,7 +52,8 @@ function toSQLCreate (list) {
       parts.push(f.property + ' ' + sqlType(f.type))
     }
   }
-  return parts.join(', ')
+  const joined = parts.join(', ')
+  return joined
 }
 
 function sqlType (type) {
@@ -58,8 +62,16 @@ function sqlType (type) {
       return 'text'
     case 'number':
       return 'float'
+    case 'date':
+      return 'timestamp with time zone'
+    case 'integer':
+      return 'integer'
+    case 'boolean':
+      return 'boolean'
+    case 'id':
+      return 'bigint'
     default:
-      throw Error('no SQL type to match type: ' + JSON.stringify(type))
+      throw Error('no implemented SQL type to match type: ' + JSON.stringify(type))
   }
 }
 

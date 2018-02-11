@@ -2,6 +2,8 @@
 
 A convenient way to use postgres data from JavaScript.
 
+Implements [datapages interface](https://github.com/sandhawke/datapages).
+
 Example assumes you've set up postgres and the right environment
 variables, and a suitable table called my_dogs.
 
@@ -48,4 +50,11 @@ In the interest of simplicity, we have some limitations at the moment:
 
 Todo: compare to in-memory message passing (or https://redis.io/topics/pubsub?)  over a restful or websockets api?
 
+## Credits and Disclaimer
+
+This material is based upon work supported by the National Science
+Foundation under Grant No. 1313789.  Any opinions, findings, and
+conclusions or recommendations expressed in this material are those of
+the author(s) and do not necessarily reflect the views of the National
+Science Foundation.
 

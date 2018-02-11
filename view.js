@@ -174,6 +174,12 @@ class View {
     return target[name]
   }
 
+  async overlay (target, overlay) {
+    for (let key of Object.keys(overlay)) {
+      this.proxyHandlerSet(target, key, overlay[key])
+    }
+  }
+
   proxyHandlerSet (target, name, value, receiver) {
     // not sure what to do about receiver...
     this.debug('set', target, name, value, receiver)
@@ -242,7 +248,7 @@ class View {
     }
 
     // Leave the body empty until it comes back from database
-    const target = { _newlyThIng: data }
+    const target = {} //  _newlyThIng: data }
     const proxy = new Proxy(target, this.handler)
     // addAsync will fill in the id soon, but not yet
     this.addAsync(data, target, proxy)
@@ -491,6 +497,7 @@ class View {
       this.debug('got lock')
 
       await this.createTriggerFunction(client)
+      console.log('**********************************   created tf')
       this.debug('did create trigger function')
 
       //
@@ -558,7 +565,7 @@ class View {
   async createTriggerFunction (conn) {
     const sql = `
     CREATE OR REPLACE FUNCTION live_view_notify() RETURNS TRIGGER AS $$
-    DECLARE 
+    DECLARE
         row json;
         msg json;
     BEGIN
@@ -571,10 +578,9 @@ class View {
         PERFORM pg_notify(TG_TABLE_NAME || '_notify', msg::text);
         RETURN NULL; 
     END;
-    $$ LANGUAGE plpgsql;
-    `
+    $$ LANGUAGE plpgsql`
     try {
-      this.debug('creating live_view_notify')
+      this.debug('creating live_view_notify', sql)
       await conn.query(sql)
       this.debug('created live_view_notify')
     } catch (e) {
@@ -587,13 +593,15 @@ class View {
   async createTableIfNeeded (conn) {
     this.debug('createTableIfNeeded', this.createUsingSQL)
     if (this.createUsingSQL) {
-      this.debug('trying to create table')
-      // do NOT sql-quote this, but we SHOULD machine generate it
-      await conn.query(
+      // do NOT sql-quote this, it's machine generated usually
+      const query = (
         `CREATE TABLE IF NOT EXISTS ${this.table} (
            id serial primary key,
            ${this.createUsingSQL}
          )`)
+      this.debug('trying to create table', query)
+      const result = await conn.query(query)
+      this.debug('creation result', result)
     }
   }
 
